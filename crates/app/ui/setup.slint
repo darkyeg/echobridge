@@ -1,0 +1,158 @@
+// Setup: which devices to use, starting with Windows, and advanced timing.
+
+import { AboutSlint, ComboBox, SpinBox } from "std-widgets.slint";
+import { Theme, Tone } from "theme.slint";
+import { Icons } from "icons.slint";
+import { Button, ButtonKind, Card, Field, Heading, Notice, Toggle } from "components.slint";
+import { Setup } from "state.slint";
+
+export component SetupPage inherits VerticalLayout {
+    spacing: 16px;
+    alignment: start;
+
+    Card {
+        HorizontalLayout {
+            Heading {
+                horizontal-stretch: 1;
+                title: "Devices";
+                subtitle: "Choose the headset microphone, the headphones it hears, and where the clean microphone goes.";
+            }
+            VerticalLayout {
+                alignment: start;
+                Button {
+                    text: "Refresh";
+                    icon: Icons.refresh;
+                    kind: ButtonKind.ghost;
+                    clicked => {
+                        Setup.refresh-devices();
+                    }
+                }
+            }
+        }
+        Field {
+            label: "Microphone";
+            ComboBox {
+                model: Setup.microphones;
+                current-index <=> Setup.microphone-index;
+                accessible-label: "Microphone";
+                selected => {
+                    Setup.devices-changed();
+                }
+            }
+        }
+        Field {
+            label: "Headphones";
+            hint: "The playback device whose sound leaks into the microphone.";
+            ComboBox {
+                model: Setup.playback-devices;
+                current-index <=> Setup.playback-index;
+                accessible-label: "Headphones";
+                selected => {
+                    Setup.devices-changed();
+                }
+            }
+        }
+        Field {
+            label: "Send the clean microphone to";
+            hint: Setup.call-app-microphone != ""
+                ? "In Discord, Zoom or Teams, choose \"" + Setup.call-app-microphone + "\" as your microphone."
+                : "";
+            ComboBox {
+                model: Setup.outputs;
+                current-index <=> Setup.output-index;
+                accessible-label: "Send the clean microphone to";
+                selected => {
+                    Setup.devices-changed();
+                }
+            }
+        }
+        if Setup.cable-missing: Notice {
+            text: "Call apps need a virtual cable to receive the clean microphone. Install VB-CABLE (free), then press Refresh.";
+            Button {
+                text: "Get VB-CABLE";
+                kind: ButtonKind.primary;
+                clicked => {
+                    Setup.get-cable();
+                }
+            }
+        }
+        if Setup.device-error != "": Notice {
+            tone: Tone.error;
+            text: Setup.device-error;
+        }
+    }
+
+    Card {
+        Heading {
+            title: "Startup";
+        }
+        Toggle {
+            title: "Start with Windows";
+            description: "EchoBridge starts in the notification area when you sign in.";
+            enabled: Setup.autostart-supported;
+            checked <=> Setup.autostart;
+            toggled(on) => {
+                Setup.autostart-changed(on);
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+        Toggle {
+            title: "Protect the microphone when EchoBridge starts";
+            description: "Otherwise your microphone passes through unchanged until you press Resume.";
+            checked <=> Setup.protect-on-start;
+            toggled(on) => {
+                Setup.protect-on-start-changed(on);
+            }
+        }
+    }
+
+    Card {
+        Heading {
+            title: "Advanced";
+        }
+        HorizontalLayout {
+            spacing: 16px;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 3px;
+                alignment: center;
+                Text {
+                    text: "Echo delay";
+                    color: Theme.text;
+                    font-size: Theme.font-body;
+                    font-weight: 600;
+                }
+                Text {
+                    text: "Milliseconds between playback and its leak. 0 finds it automatically; change it only if Adaptive or Strong miss an echo.";
+                    color: Theme.text-faint;
+                    font-size: Theme.font-small;
+                    wrap: word-wrap;
+                }
+            }
+            SpinBox {
+                width: 120px;
+                minimum: 0;
+                maximum: Setup.max-delay-ms;
+                step-size: 5;
+                value <=> Setup.delay-ms;
+                accessible-label: "Echo delay in milliseconds";
+                edited(value) => {
+                    Setup.delay-changed(value);
+                }
+            }
+        }
+    }
+
+    Card {
+        Heading {
+            title: "About";
+            subtitle: "EchoBridge " + Setup.version + ". Audio is processed on this computer and never stored.";
+        }
+        AboutSlint {
+            max-height: 120px;
+        }
+    }
+}

@@ -1,0 +1,57 @@
+EchoBridge - removes headphone sound that leaks into your microphone
+
+QUICK START
+1. Install VB-CABLE from https://vb-audio.com/Cable/ (free). Extract it, run VBCABLE_Setup_x64.exe
+   as administrator, choose Install Driver, and restart if asked.
+2. Run EchoBridge-Setup.exe, or open the portable EchoBridge.exe. EchoBridge itself needs no
+   administrator rights and no other software.
+3. Open Setup and choose:
+   - Microphone: your headset microphone.
+   - Headphones: the device whose sound leaks into the microphone.
+   - Send the clean microphone to: CABLE Input.
+4. In Discord or any call app, choose CABLE Output as the microphone. Keep your headphones as
+   the call app's speaker.
+5. Press Start on the Live page. The status turns green when your microphone is protected.
+
+Do not make CABLE Input your Windows playback device. It only receives the clean microphone.
+
+WHAT THE BUTTONS DO
+Start / Resume: removes the leak.
+Pause: your microphone still reaches the call app, unchanged.
+Turn off: the call app hears nothing from EchoBridge.
+Closing the window keeps EchoBridge running in the notification area. Quit it from the tray icon.
+
+CHOOSE HOW THE LEAK IS REMOVED
+Clean voice: never alters your voice. Best for a wired leak, such as a headset on a combined
+audio jack.
+Adaptive: removes the leak and keeps your voice clear while you talk.
+Strong: removes the most, but can muffle your voice while music plays.
+
+Noise removal is Off by default because call apps remove noise too. Standard removes steady
+noise like Chrome does. AI uses a small speech model that keeps your voice natural; it adds
+30 ms of delay.
+
+THE METERS
+Headphone playback, Microphone and Clean output show levels in dB. While only music plays, the
+clean output should stay low. When you talk, it should follow your voice.
+
+FIND OUT WHERE THE LEAK COMES FROM
+Open Leak test. Play music on your headphones and stay silent.
+Step 1: wear the headset normally and press Record.
+Step 2: press both earcups into a pillow, keep everything plugged in, and press Record.
+If covering the earcups does not lower the leak, the leak is electrical. A USB audio adapter
+or a USB headset gives the microphone its own ground.
+Save report writes numbers (never audio) to %LOCALAPPDATA%\EchoBridge\reports.
+
+STARTUP
+"Start with Windows" opens EchoBridge in the notification area when you sign in.
+"Protect the microphone when EchoBridge starts" starts echo removal right away. Otherwise your
+microphone passes through unchanged until you press Resume.
+Settings are saved automatically in %LOCALAPPDATA%\EchoBridge\settings.json.
+
+UNINSTALL
+Use Windows Settings > Apps. This removes the program and its startup entry. Your settings
+are kept.
+
+PRIVACY
+Audio is processed on this PC, in memory. Nothing is recorded or uploaded.

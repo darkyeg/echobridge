@@ -1,0 +1,17 @@
+name: Windows checks
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+      # rust-toolchain.toml selects the toolchain and installs clippy and rustfmt.
+      - run: rustup show
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: pwsh -NoProfile -File scripts/build.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: EchoBridge-Windows
+          path: dist/

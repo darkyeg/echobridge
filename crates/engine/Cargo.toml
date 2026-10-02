@@ -1,0 +1,23 @@
+[package]
+name = "echobridge-engine"
+description = "EchoBridge's live microphone engine: device streams, processing pipeline, live options, statistics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+echobridge-aec3.workspace = true
+echobridge-audio.workspace = true
+echobridge-denoise.workspace = true
+echobridge-dsp.workspace = true
+log.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+echobridge-audio = { workspace = true, features = ["fake"] }
+
+[lints]
+workspace = true

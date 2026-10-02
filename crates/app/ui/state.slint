@@ -1,0 +1,85 @@
+// The data each page shows and the actions it asks for. Rust sets the `in` properties
+// and handles the callbacks; the pages hold no logic of their own.
+
+import { Tone } from "theme.slint";
+
+export global Live {
+    in property <Tone> tone: Tone.idle;
+    in property <string> headline: "Off";
+    in property <string> detail;
+    // The engine runs: protecting, or paused with the microphone passing through.
+    in property <bool> running;
+    in property <bool> starting;
+    in property <bool> protecting;
+    in property <bool> can-start;
+
+    in property <string> microphone;
+    in property <string> playback;
+    in property <string> output;
+
+    in property <float> microphone-level: -90;
+    in property <float> playback-level: -90;
+    in property <float> output-level: -90;
+    in property <bool> clipping;
+
+    // 0 Clean voice, 1 Adaptive, 2 Strong.
+    in-out property <int> echo-mode: 1;
+    // 0 Off, 1 Standard, 2 AI.
+    in-out property <int> noise-mode: 0;
+
+    // Start when off, pause while protecting, resume while paused.
+    callback primary-action();
+    callback turn-off();
+    callback echo-mode-changed(int);
+    callback noise-mode-changed(int);
+}
+
+export global Setup {
+    in property <[string]> microphones;
+    in property <[string]> playback-devices;
+    // Virtual cables, then "Nothing (meters only)".
+    in property <[string]> outputs;
+    in-out property <int> microphone-index;
+    in-out property <int> playback-index;
+    in-out property <int> output-index;
+    in property <bool> cable-missing;
+    in property <string> call-app-microphone;
+    in property <string> device-error;
+
+    in-out property <bool> autostart;
+    in property <bool> autostart-supported: true;
+    in-out property <bool> protect-on-start: true;
+    in-out property <int> delay-ms;
+    in property <int> max-delay-ms: 250;
+
+    in property <string> version;
+
+    callback devices-changed();
+    callback refresh-devices();
+    callback get-cable();
+    callback autostart-changed(bool);
+    callback protect-on-start-changed(bool);
+    callback delay-changed(int);
+}
+
+export global LeakTest {
+    in property <string> microphone;
+    in property <string> playback;
+    in property <int> seconds: 10;
+    // The step recording now: 0 worn, 1 covered, -1 none.
+    in property <int> recording: -1;
+    in property <float> progress;
+    in property <string> worn-result: "Not recorded yet.";
+    in property <string> covered-result: "Not recorded yet.";
+    in property <bool> worn-done;
+    in property <bool> has-verdict;
+    in property <string> verdict-title;
+    in property <string> verdict-detail;
+    in property <Tone> verdict-tone: Tone.idle;
+    in property <string> saved-path;
+
+    callback record(int);
+    callback cancel();
+    callback save-report();
+    callback open-reports();
+}

@@ -1,0 +1,51 @@
+//! Real-time scheduling for audio threads.
+
+/// Audio scheduling for the current thread while this value lives.
+///
+/// On Windows this is the "Pro Audio" multimedia class (MMCSS), as Chrome uses for audio.
+/// On a busy PC a normal-priority thread was preempted for 30-70 ms and the output ran dry.
+#[derive(Debug)]
+pub struct AudioThreadPriority {
+    #[cfg(windows)]
+    task: Option<windows::Win32::Foundation::HANDLE>,
+}
+
+impl AudioThreadPriority {
+    pub fn raise() -> Self {
+        #[cfg(windows)]
+        {
+            use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
+            let mut index = 0u32;
+            // SAFETY: the task name is a static NUL-terminated string.
+            let task = unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Pro Audio"), &mut index) }.ok();
+            Self { task }
+        }
+        #[cfg(not(windows))]
+        {
+            Self {}
+        }
+    }
+
+    /// Whether the system granted audio scheduling.
+    pub fn granted(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.task.is_some()
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+}
+
+impl Drop for AudioThreadPriority {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if let Some(task) = self.task {
+            // SAFETY: `task` came from AvSetMmThreadCharacteristicsW on this thread, which
+            // this value never leaves (it is not Send).
+            unsafe { windows::Win32::System::Threading::AvRevertMmThreadCharacteristics(task) }.ok();
+        }
+    }
+}

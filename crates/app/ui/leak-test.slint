@@ -1,0 +1,117 @@
+// Leak test: is playback reaching the microphone through the air or through the wiring?
+
+import { Theme, Tone } from "theme.slint";
+import { Button, ButtonKind, Card, Heading, Progress } from "components.slint";
+import { LeakTest } from "state.slint";
+
+component StepCard inherits Card {
+    in property <int> step;
+    in property <string> title;
+    in property <string> instructions;
+    in property <string> result;
+    in property <bool> available: true;
+
+    property <bool> recording: LeakTest.recording == root.step;
+
+    HorizontalLayout {
+        spacing: 16px;
+        Heading {
+            horizontal-stretch: 1;
+            title: root.title;
+            subtitle: root.instructions;
+        }
+        VerticalLayout {
+            alignment: start;
+            Button {
+                text: root.recording ? "Cancel" : "Record " + LeakTest.seconds + " s";
+                kind: root.recording ? ButtonKind.secondary : ButtonKind.primary;
+                enabled: root.recording || (root.available && LeakTest.recording < 0);
+                clicked => {
+                    if root.recording {
+                        LeakTest.cancel();
+                    } else {
+                        LeakTest.record(root.step);
+                    }
+                }
+            }
+        }
+    }
+    if root.recording: Progress {
+        value: LeakTest.progress;
+    }
+    Text {
+        text: root.recording ? "Recording… stay silent." : root.result;
+        color: Theme.text-muted;
+        font-size: Theme.font-small;
+        wrap: word-wrap;
+    }
+}
+
+export component LeakTestPage inherits VerticalLayout {
+    spacing: 16px;
+    alignment: start;
+
+    Card {
+        inner-padding: 16px;
+        Text {
+            text: "Microphone: " + LeakTest.microphone + "\nHeadphones: " + LeakTest.playback;
+            color: Theme.text-muted;
+            font-size: Theme.font-small;
+            wrap: word-wrap;
+        }
+    }
+
+    StepCard {
+        step: 0;
+        title: "Step 1 · Headset on";
+        instructions: "Play music on your headphones at your usual volume. Wear the headset normally and stay silent while recording.";
+        result: LeakTest.worn-result;
+    }
+
+    StepCard {
+        step: 1;
+        title: "Step 2 · Earcups covered";
+        instructions: "Keep the same music and volume. Take the headset off and press both earcups face-down into a pillow or blanket. Keep everything plugged in and stay silent.";
+        result: LeakTest.covered-result;
+        available: LeakTest.worn-done;
+    }
+
+    Card {
+        Text {
+            text: LeakTest.has-verdict ? LeakTest.verdict-title : "Result";
+            color: LeakTest.has-verdict ? Theme.tone-color(LeakTest.verdict-tone) : Theme.text;
+            font-size: Theme.font-title;
+            font-weight: 650;
+        }
+        Text {
+            text: LeakTest.has-verdict ? LeakTest.verdict-detail : "Record both steps to compare them.";
+            color: Theme.text-muted;
+            font-size: Theme.font-body;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+            Button {
+                text: "Save report";
+                enabled: LeakTest.has-verdict;
+                clicked => {
+                    LeakTest.save-report();
+                }
+            }
+            Button {
+                text: "Open reports folder";
+                kind: ButtonKind.ghost;
+                clicked => {
+                    LeakTest.open-reports();
+                }
+            }
+        }
+        if LeakTest.saved-path != "": Text {
+            text: "Saved to " + LeakTest.saved-path;
+            color: Theme.text-faint;
+            font-size: Theme.font-small;
+            wrap: word-wrap;
+        }
+    }
+}

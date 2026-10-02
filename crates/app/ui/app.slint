@@ -1,0 +1,193 @@
+// The window and the notification-area icon.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Tone } from "theme.slint";
+import { Icons } from "icons.slint";
+import { Dot, NavItem, PageHeader } from "components.slint";
+import { Live, Setup, LeakTest } from "state.slint";
+import { LivePage } from "live.slint";
+import { SetupPage } from "setup.slint";
+import { LeakTestPage } from "leak-test.slint";
+
+export { Live, Setup, LeakTest, Tone }
+
+export enum Page { live, setup, leak-test }
+
+component Sidebar inherits Rectangle {
+    in-out property <Page> page;
+    background: Theme.sidebar;
+    width: 232px;
+    accessible-role: navigation;
+
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Theme.border;
+    }
+    VerticalLayout {
+        padding: 16px;
+        padding-top: 22px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-bottom: 22px;
+            spacing: 12px;
+            Image {
+                source: @image-url("../assets/icon.png");
+                width: 32px;
+                height: 32px;
+                accessible-role: none;
+            }
+            Text {
+                text: "EchoBridge";
+                vertical-alignment: center;
+                color: Theme.text;
+                font-size: 17px;
+                font-weight: 700;
+            }
+        }
+        NavItem {
+            text: "Live";
+            icon: Icons.live;
+            selected: root.page == Page.live;
+            clicked => {
+                root.page = Page.live;
+            }
+        }
+        NavItem {
+            text: "Setup";
+            icon: Icons.setup;
+            selected: root.page == Page.setup;
+            clicked => {
+                root.page = Page.setup;
+            }
+        }
+        NavItem {
+            text: "Leak test";
+            icon: Icons.leak;
+            selected: root.page == Page.leak-test;
+            clicked => {
+                root.page = Page.leak-test;
+            }
+        }
+        Rectangle { }
+        Rectangle {
+            border-radius: Theme.radius-small;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            accessible-role: text;
+            accessible-label: "Status: " + Live.headline;
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 10px;
+                VerticalLayout {
+                    alignment: center;
+                    Dot {
+                        tone: Live.tone;
+                    }
+                }
+                Text {
+                    text: Live.headline;
+                    vertical-alignment: center;
+                    color: Theme.text;
+                    font-size: Theme.font-body;
+                    font-weight: 600;
+                    accessible-role: none;
+                }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    in-out property <Page> page: Page.live;
+    // Toggled to repaint the whole window: see the rectangle below.
+    in-out property <bool> repaint;
+
+    title: "EchoBridge";
+    icon: @image-url("../assets/icon.png");
+    background: Theme.background;
+    preferred-width: 1000px;
+    preferred-height: 760px;
+    min-width: 860px;
+    min-height: 600px;
+    default-font-size: Theme.font-body;
+    default-font-family: "Segoe UI";
+
+    // Windows clears the window's pixels while it is minimized or hidden, and the software
+    // renderer then redraws only what changed, leaving the rest showing what was behind the
+    // window. Changing this full-size, invisible rectangle redraws everything.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: root.repaint ? #00000001 : #00000000;
+    }
+
+    HorizontalLayout {
+        Sidebar {
+            page <=> root.page;
+        }
+        ScrollView {
+            horizontal-stretch: 1;
+            content-width: self.visible-width;
+            content-height: content.preferred-height;
+            content := VerticalLayout {
+                width: parent.width;
+                padding: Theme.page-padding;
+                spacing: 20px;
+                alignment: start;
+                PageHeader {
+                    title: root.page == Page.live ? "Live" : root.page == Page.setup ? "Setup" : "Leak test";
+                    subtitle: root.page == Page.live
+                        ? "EchoBridge removes headphone sound that leaks into your microphone before call apps hear it."
+                        : root.page == Page.setup
+                            ? "Your choices are saved automatically."
+                            : "Find out whether playback reaches your microphone through the air or through the wiring. Audio stays in memory; reports hold numbers only.";
+                }
+                if root.page == Page.live: LivePage { }
+                if root.page == Page.setup: SetupPage { }
+                if root.page == Page.leak-test: LeakTestPage { }
+            }
+        }
+    }
+}
+
+export component AppTray inherits SystemTrayIcon {
+    in property <bool> running;
+    in property <bool> protecting;
+    in property <string> status;
+    callback open();
+    callback toggle();
+    callback quit();
+
+    icon: @image-url("../assets/tray.png");
+    title: "EchoBridge";
+    tooltip: "EchoBridge: " + root.status;
+    clicked => {
+        root.open();
+    }
+
+    Menu {
+        MenuItem {
+            title: "Open EchoBridge";
+            activated => {
+                root.open();
+            }
+        }
+        MenuItem {
+            title: root.protecting ? "Pause protection" : root.running ? "Resume protection" : "Start protection";
+            activated => {
+                root.toggle();
+            }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Quit EchoBridge";
+            activated => {
+                root.quit();
+            }
+        }
+    }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "echobridge-aec3"
+description = "WebRTC AEC3 echo cancellation and noise suppression behind a safe Rust API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "echobridge_webrtc"
+
+[dependencies]
+thiserror.workspace = true
+
+[build-dependencies]
+cc = { version = "1", features = ["parallel"] }
+sha2 = "0.10"
+
+[lints]
+workspace = true

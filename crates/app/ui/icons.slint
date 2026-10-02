@@ -1,0 +1,27 @@
+// Line icons on a 24 x 24 grid, drawn as paths so they scale and take any color.
+
+export global Icons {
+    out property <string> live: "M3 12h3l3-7 4 14 3-7h5";
+    out property <string> setup: "M4 7h9 M17 7h3 M15 5v4 M4 17h3 M11 17h9 M9 15v4";
+    out property <string> leak: "M4 16v-4a8 8 0 0 1 16 0v4 M4 15h3v5H5a1 1 0 0 1-1-1z M20 15h-3v5h2a1 1 0 0 0 1-1z";
+    out property <string> refresh: "M20 11a8 8 0 0 0-14.5-4.5L4 8 M4 4v4h4 M4 13a8 8 0 0 0 14.5 4.5L20 16 M20 20v-4h-4";
+    out property <string> microphone: "M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z M5 11a7 7 0 0 0 14 0 M12 18v3";
+    out property <string> headphones: "M4 16v-4a8 8 0 0 1 16 0v4 M4 15h3v5H5a1 1 0 0 1-1-1z M20 15h-3v5h2a1 1 0 0 0 1-1z";
+    out property <string> cable: "M7 7v4a5 5 0 0 0 10 0V7 M9 3v4 M15 3v4 M12 16v5";
+    out property <string> shield: "M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z M9 12l2 2 4-4";
+    out property <string> chevron: "M9 6l6 6-6 6";
+}
+
+export component Icon inherits Path {
+    in property <string> icon;
+    in property <color> color;
+    commands: root.icon;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    width: 18px;
+    height: 18px;
+    stroke: root.color;
+    stroke-width: 1.8px;
+    stroke-line-cap: round;
+    fill: transparent;
+}

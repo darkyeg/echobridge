@@ -1,0 +1,195 @@
+// Live: whether the microphone is protected, the levels, and how strongly to clean.
+
+import { Theme } from "theme.slint";
+import { Icons, Icon } from "icons.slint";
+import { Button, ButtonKind, Card, Dot, Heading, Meter, PathChip, Segmented } from "components.slint";
+import { Live } from "state.slint";
+
+component StatusCard inherits Card {
+    inner-padding: 22px;
+    HorizontalLayout {
+        spacing: 18px;
+        VerticalLayout {
+            alignment: start;
+            padding-top: 6px;
+            Dot {
+                tone: Live.tone;
+            }
+        }
+        VerticalLayout {
+            spacing: 6px;
+            horizontal-stretch: 1;
+            Text {
+                text: Live.headline;
+                color: Theme.text;
+                font-size: Theme.font-display;
+                font-weight: 650;
+                accessible-role: text;
+            }
+            Text {
+                text: Live.detail;
+                color: Theme.text-muted;
+                font-size: Theme.font-body;
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                spacing: 10px;
+                Button {
+                    text: Live.protecting ? "Pause" : Live.running ? "Resume" : "Start";
+                    kind: Live.protecting ? ButtonKind.secondary : ButtonKind.primary;
+                    enabled: !Live.starting && (Live.running || Live.can-start);
+                    min-width: 104px;
+                    clicked => {
+                        Live.primary-action();
+                    }
+                }
+                if Live.running || Live.starting: Button {
+                    text: "Turn off";
+                    kind: ButtonKind.ghost;
+                    clicked => {
+                        Live.turn-off();
+                    }
+                }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        PathChip {
+            icon: Icons.microphone;
+            caption: "Microphone";
+            name: Live.microphone;
+        }
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                icon: Icons.chevron;
+                color: Theme.text-faint;
+                width: 14px;
+                height: 14px;
+            }
+        }
+        PathChip {
+            icon: Icons.shield;
+            caption: "Removes playback from";
+            name: Live.playback;
+            icon-color: Theme.playback;
+        }
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                icon: Icons.chevron;
+                color: Theme.text-faint;
+                width: 14px;
+                height: 14px;
+            }
+        }
+        PathChip {
+            icon: Icons.cable;
+            caption: "Sends clean audio to";
+            name: Live.output;
+            icon-color: Theme.accent;
+        }
+    }
+}
+
+component Choice inherits Card {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <[string]> options;
+    in property <[string]> descriptions;
+    in-out property <int> selected;
+    callback changed(int);
+
+    Heading {
+        title: root.title;
+        subtitle: root.subtitle;
+    }
+    Segmented {
+        label: root.title;
+        options: root.options;
+        selected <=> root.selected;
+        changed(index) => {
+            root.changed(index);
+        }
+    }
+    Text {
+        text: root.descriptions[root.selected];
+        color: Theme.text-muted;
+        font-size: Theme.font-small;
+        wrap: word-wrap;
+        min-height: 32px;
+    }
+}
+
+export component LivePage inherits VerticalLayout {
+    spacing: 16px;
+    alignment: start;
+
+    StatusCard { }
+
+    Card {
+        Heading {
+            title: "Levels";
+            subtitle: "The clean output should stay low while only music plays, and follow your voice when you talk.";
+        }
+        Meter {
+            label: "Microphone";
+            level: Live.microphone-level;
+            active: Live.running;
+            alert: Live.clipping;
+            alert-text: "Clipping";
+        }
+        Meter {
+            label: "Headphone playback";
+            level: Live.playback-level;
+            color: Theme.playback;
+            active: Live.running;
+        }
+        Meter {
+            label: "Clean output";
+            level: Live.output-level;
+            color: Theme.good;
+            active: Live.running;
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 16px;
+        Choice {
+            // Equal halves, whatever the text length.
+            width: (parent.width - 16px) / 2;
+            title: "Echo removal";
+            subtitle: "How playback leaking into your microphone is removed.";
+            options: ["Clean voice", "Adaptive", "Strong"];
+            descriptions: [
+                "Never alters your voice. Best for a wired leak, such as a headset on a combined audio jack.",
+                "Removes the leak and keeps your voice clear while you talk. Recommended.",
+                "Removes the most, but can muffle your voice while music plays.",
+            ];
+            selected <=> Live.echo-mode;
+            changed(index) => {
+                Live.echo-mode-changed(index);
+            }
+        }
+        Choice {
+            // Equal halves, whatever the text length.
+            width: (parent.width - 16px) / 2;
+            title: "Noise removal";
+            subtitle: "Background noise such as fans, keyboards and traffic.";
+            options: ["Off", "Standard", "AI"];
+            descriptions: [
+                "Your call app handles background noise.",
+                "Removes steady noise, like Chrome does.",
+                "Cleanest voice with DeepFilterNet. Adds 30 ms of delay.",
+            ];
+            selected <=> Live.noise-mode;
+            changed(index) => {
+                Live.noise-mode-changed(index);
+            }
+        }
+    }
+}

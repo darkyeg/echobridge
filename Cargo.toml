@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = ["crates/dsp", "crates/aec3", "crates/denoise", "crates/audio", "crates/engine", "crates/app"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+echobridge-dsp = { path = "crates/dsp" }
+echobridge-aec3 = { path = "crates/aec3" }
+echobridge-denoise = { path = "crates/denoise" }
+echobridge-audio = { path = "crates/audio" }
+echobridge-engine = { path = "crates/engine" }
+realfft = "3"
+rustfft = "6"
+thiserror = "2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+# Unwinding stays on so a panic inside the AI model can be caught and the voice passed
+# through instead of the whole application stopping.
+panic = "unwind"
+
+# Tests run the DSP on many seconds of audio; unoptimized they would take minutes.
+[profile.test]
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 3

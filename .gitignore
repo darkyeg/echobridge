@@ -1,0 +1,11 @@
+/target/
+/dist/
+*.exe
+*.zip
+*.wav
+*.pcm
+*.raw
+.env
+.env.*
+local-reports/
+!crates/denoise/tests/fixtures/*.wav

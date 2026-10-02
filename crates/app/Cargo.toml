@@ -1,0 +1,45 @@
+[package]
+name = "echobridge"
+description = "EchoBridge: removes headphone playback that leaks into your microphone"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "EchoBridge"
+path = "src/main.rs"
+
+[dependencies]
+echobridge-audio.workspace = true
+echobridge-dsp.workspace = true
+echobridge-engine.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Software rendering keeps memory low: no GPU context for a window that is mostly hidden.
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "software-renderer-path", "accessibility", "system-tray"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+slint-build = "1.18"
+winresource = "0.1"
+
+[dev-dependencies]
+echobridge-audio = { workspace = true, features = ["fake"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true
