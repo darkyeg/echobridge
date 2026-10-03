@@ -43,7 +43,9 @@ impl BlockAssembler {
         emit: &mut dyn FnMut(CaptureBlock<'_>),
     ) {
         let waiting = self.pending.len() / self.channels;
-        if waiting > 0 && (time - (self.pending_time + waiting as f64 / f64::from(RATE))).abs() > CONTINUITY {
+        if waiting > 0
+            && (discontinuity || (time - (self.pending_time + waiting as f64 / f64::from(RATE))).abs() > CONTINUITY)
+        {
             self.discarded_frames += waiting as u64;
             self.pending.clear();
             self.discontinuity = true;

@@ -214,9 +214,6 @@ fn log_changes(before: &Stats, now: &Stats) {
     if now.reference_shift_ms != before.reference_shift_ms {
         log::info!("leak realigned: reference read {:.1} ms after the microphone", now.reference_shift_ms);
     }
-    if now.clipping && !before.clipping {
-        log::info!("microphone clipping");
-    }
 }
 
 /// Join first so the summary includes any frame that was still being processed at stop.
@@ -238,6 +235,8 @@ fn log_health(logger: &mut HealthLog, stats: &Stats, force: bool) {
             retrained: stats.canceller_retrains,
             stream_resets: stats.stream_resets,
             reference_discontinuities: stats.reference_discontinuities,
+            padding: stats.output_padding_events,
+            clipped: stats.clipped_frames,
         },
         processing: stats.processing,
         coverage: stats.reference_coverage,
@@ -246,10 +245,14 @@ fn log_health(logger: &mut HealthLog, stats: &Stats, force: bool) {
         processing_ms: stats.processing_ms,
         reference_wait_ms: stats.reference_wait_ms,
         echo_mode: match stats.options.echo {
-            EchoMode::CleanVoice => "clean", EchoMode::Adaptive => "adaptive", EchoMode::Strong => "strong",
+            EchoMode::CleanVoice => "clean",
+            EchoMode::Adaptive => "adaptive",
+            EchoMode::Strong => "strong",
         },
         noise_mode: match stats.options.noise {
-            NoiseRemoval::Off => "off", NoiseRemoval::Standard => "standard", NoiseRemoval::Ai => "ai",
+            NoiseRemoval::Off => "off",
+            NoiseRemoval::Standard => "standard",
+            NoiseRemoval::Ai => "ai",
         },
         raw_microphone: stats.raw_microphone,
         audio_priority: stats.audio_priority,

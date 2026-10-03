@@ -105,7 +105,9 @@ impl LogFile {
                 let source = self.backup_path(index);
                 match fs::metadata(&source) {
                     Ok(metadata) if metadata.is_file() => fs::rename(&source, self.backup_path(index + 1))?,
-                    Ok(_) => return Err(io::Error::new(io::ErrorKind::AlreadyExists, "a log backup path is not a file")),
+                    Ok(_) => {
+                        return Err(io::Error::new(io::ErrorKind::AlreadyExists, "a log backup path is not a file"));
+                    }
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
                 }
@@ -125,23 +127,37 @@ impl LogFile {
     }
 
     fn write(&mut self, line: &str) -> io::Result<()> {
-        if self.bytes + line.len() as u64 > MAX_BYTES {
-            self.rotate().ok();
+        let line_bytes = line.len() as u64;
+        if line_bytes > MAX_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "a log line exceeds the file size limit"));
+        }
+        if self.bytes.saturating_add(line_bytes) > MAX_BYTES {
+            // If rotation fails, keep the existing log intact and drop this line. Appending
+            // after a failed rotation would make a long session grow the active file forever.
+            self.rotate()?;
         }
         if self.file.is_none() {
             let file = OpenOptions::new().create(true).append(true).open(&self.path)?;
             self.bytes = file.metadata()?.len();
             self.file = Some(file);
         }
-        self.file.as_mut().expect("the log was reopened").write_all(line.as_bytes())?;
-        self.bytes += line.len() as u64;
+        let result = self.file.as_mut().expect("the log was reopened").write_all(line.as_bytes());
+        if let Err(error) = result {
+            // write_all may have written a prefix before failing. Refresh the count so a
+            // later message cannot exceed the cap using stale accounting.
+            self.bytes =
+                self.file.as_ref().and_then(|file| file.metadata().ok()).map_or(MAX_BYTES, |metadata| metadata.len());
+            return Err(error);
+        }
+        self.bytes += line_bytes;
         Ok(())
     }
 
-    fn flush(&mut self) {
+    fn flush(&mut self) -> io::Result<()> {
         if let Some(file) = &mut self.file {
-            file.flush().ok();
+            file.flush()?;
         }
+        Ok(())
     }
 }
 
@@ -161,18 +177,28 @@ pub fn init(folder: &Path) {
 }
 
 fn write_messages(mut file: LogFile, messages: Receiver<Message>, skipped: Arc<AtomicU64>) {
+    let mut dropped = 0u64;
     while let Ok(message) = messages.recv() {
-        let count = skipped.swap(0, Ordering::Relaxed);
-        if count > 0 {
-            file.write(&format!("{} WARN  logging queue full: skipped {count} messages\n", Timestamp::now().iso()))
-                .ok();
+        dropped = dropped.saturating_add(skipped.swap(0, Ordering::Relaxed));
+        if dropped > 0 {
+            let summary = format!(
+                "{} WARN  logging dropped {dropped} messages (queue full or storage error)\n",
+                Timestamp::now().iso()
+            );
+            if file.write(&summary).is_ok() {
+                dropped = 0;
+            }
         }
         match message {
             Message::Line(line) => {
-                file.write(&line).ok();
+                if file.write(&line).is_err() {
+                    dropped = dropped.saturating_add(1);
+                }
             }
             Message::Flush(done) => {
-                file.flush();
+                if file.flush().is_err() {
+                    dropped = dropped.saturating_add(1);
+                }
                 done.send(()).ok();
             }
         }
@@ -254,7 +280,7 @@ mod tests {
         }
         logger.flush();
         let text = fs::read_to_string(folder.0.join("echobridge.log")).unwrap();
-        assert!(text.contains("skipped 7 messages"));
+        assert!(text.contains("dropped 7 messages"));
         assert!(text.find("paused").unwrap() < text.find("protecting").unwrap());
         assert!(text.ends_with("device failed\n"));
         drop(logger);
@@ -306,13 +332,50 @@ mod tests {
     }
 
     #[test]
-    fn failed_rotation_preserves_the_active_log_and_new_event() {
+    fn failed_rotation_preserves_the_active_log_without_growing_it() {
         let folder = Folder::new();
         fs::create_dir(folder.0.join("echobridge.old.log")).unwrap();
         let mut file = LogFile::open(&folder.0).unwrap();
         file.write(&"x".repeat(MAX_BYTES as usize)).unwrap();
-        file.write("device failed\n").unwrap();
-        assert!(fs::read_to_string(folder.0.join("echobridge.log")).unwrap().ends_with("device failed\n"));
+        for _ in 0..100 {
+            assert!(file.write("device failed\n").is_err());
+        }
+        assert_eq!(fs::metadata(folder.0.join("echobridge.log")).unwrap().len(), MAX_BYTES);
+        assert!(fs::read_to_string(folder.0.join("echobridge.log")).unwrap().starts_with('x'));
+    }
+
+    #[test]
+    fn background_writer_reports_disk_drops_after_rotation_recovers() {
+        let folder = Folder::new();
+        fs::create_dir(folder.0.join("echobridge.old.log")).unwrap();
+        let mut file = LogFile::open(&folder.0).unwrap();
+        file.write(&"x".repeat(MAX_BYTES as usize)).unwrap();
+        let (sender, messages) = sync_channel(QUEUE_LINES);
+        let skipped = Arc::new(AtomicU64::new(0));
+        let lost = skipped.clone();
+        let writer = std::thread::spawn(move || write_messages(file, messages, lost));
+
+        for _ in 0..2 {
+            sender.send(Message::Line("failed event\n".into())).unwrap();
+        }
+        let (done, flushed) = std::sync::mpsc::channel();
+        sender.send(Message::Flush(done)).unwrap();
+        flushed.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(fs::metadata(folder.0.join("echobridge.log")).unwrap().len(), MAX_BYTES);
+
+        fs::remove_dir(folder.0.join("echobridge.old.log")).unwrap();
+        sender.send(Message::Line("recovered event\n".into())).unwrap();
+        let (done, flushed) = std::sync::mpsc::channel();
+        sender.send(Message::Flush(done)).unwrap();
+        flushed.recv_timeout(Duration::from_secs(2)).unwrap();
+        drop(sender);
+        writer.join().unwrap();
+
+        let active = fs::read_to_string(folder.0.join("echobridge.log")).unwrap();
+        let prior = fs::read_to_string(folder.0.join("echobridge.old.log")).unwrap();
+        assert!(active.contains("logging dropped 2 messages"));
+        assert!(active.ends_with("recovered event\n"));
+        assert!(prior.starts_with('x'));
     }
 
     #[test]

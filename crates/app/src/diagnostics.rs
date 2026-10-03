@@ -15,6 +15,8 @@ pub struct Counters {
     pub retrained: u64,
     pub stream_resets: u64,
     pub reference_discontinuities: u64,
+    pub padding: u64,
+    pub clipped: u64,
 }
 
 impl Counters {
@@ -28,6 +30,8 @@ impl Counters {
             retrained: self.retrained.saturating_sub(before.retrained),
             stream_resets: self.stream_resets.saturating_sub(before.stream_resets),
             reference_discontinuities: self.reference_discontinuities.saturating_sub(before.reference_discontinuities),
+            padding: self.padding.saturating_sub(before.padding),
+            clipped: self.clipped.saturating_sub(before.clipped),
         }
     }
 
@@ -40,11 +44,18 @@ impl Counters {
             || self.retrained < before.retrained
             || self.stream_resets < before.stream_resets
             || self.reference_discontinuities < before.reference_discontinuities
+            || self.padding < before.padding
+            || self.clipped < before.clipped
     }
 
     fn problems(self) -> bool {
-        self.incomplete_reference > 0 || self.gaps > 0 || self.trims > 0 || self.dropped > 0
-            || self.stream_resets > 0 || self.reference_discontinuities > 0
+        self.incomplete_reference > 0
+            || self.gaps > 0
+            || self.trims > 0
+            || self.dropped > 0
+            || self.stream_resets > 0
+            || self.reference_discontinuities > 0
+            || self.clipped > 0
     }
 }
 
@@ -151,7 +162,7 @@ impl fmt::Display for HealthReport {
         let missing = 100.0 * self.delta.incomplete_reference as f64 / self.delta.frames.max(1) as f64;
         write!(
             f,
-            "audio health: processing={} echo={} noise={} raw={} priority={} ai_overloaded={} frames=+{}/{} incomplete_reference=+{}/{} ({missing:.1}%) gaps=+{}/{} trims=+{}/{} dropped=+{}/{} retrained=+{}/{} stream_resets=+{}/{} reference_discontinuities=+{}/{} reference_shift={:.1}ms sampled_coverage_min={:.1}% sampled_buffer={:.1}..{:.1}ms sampled_processing_max={:.2}ms sampled_reference_wait_max={:.2}ms",
+            "audio health: processing={} echo={} noise={} raw={} priority={} ai_overloaded={} frames=+{}/{} incomplete_reference=+{}/{} ({missing:.1}%) gaps=+{}/{} trims=+{}/{} dropped=+{}/{} retrained=+{}/{} stream_resets=+{}/{} reference_discontinuities=+{}/{} padding=+{}/{} clipped=+{}/{} reference_shift={:.1}ms sampled_coverage_min={:.1}% sampled_buffer={:.1}..{:.1}ms sampled_processing_max={:.2}ms sampled_reference_wait_max={:.2}ms",
             self.now.processing,
             self.now.echo_mode,
             self.now.noise_mode,
@@ -174,6 +185,10 @@ impl fmt::Display for HealthReport {
             self.now.counters.stream_resets,
             self.delta.reference_discontinuities,
             self.now.counters.reference_discontinuities,
+            self.delta.padding,
+            self.now.counters.padding,
+            self.delta.clipped,
+            self.now.counters.clipped,
             self.now.reference_shift_ms,
             100.0 * self.min_coverage,
             self.min_buffer_ms,
@@ -220,23 +235,26 @@ mod tests {
     fn a_thirteen_hour_fault_retains_its_counts_with_bounded_log_volume() {
         let at = Instant::now();
         let mut logger = HealthLog::default();
-        let (mut reports, mut bytes, mut missing, mut resets) = (0, 0, 0, 0);
+        let (mut reports, mut bytes, mut missing, mut resets, mut clipped) = (0, 0, 0, 0, 0);
         let ticks = 13 * 60 * 60 * 20;
         for tick in 0..=ticks {
             let mut sample = health(tick * 5, tick * 5);
             sample.echo_mode = "clean";
             sample.noise_mode = "ai";
             sample.counters.stream_resets = tick / 10_000;
+            sample.counters.clipped = tick * 5;
             if let Some(report) = logger.observe(sample, at + Duration::from_millis(tick * 50), tick == ticks) {
                 reports += 1;
                 bytes += report.to_string().len() + 32; // timestamp, level and newline
                 missing += report.delta.incomplete_reference;
                 resets += report.delta.stream_resets;
+                clipped += report.delta.clipped;
             }
         }
         assert!(reports <= 1562, "reports: {reports}");
         assert_eq!(missing, ticks * 5);
         assert_eq!(resets, ticks / 10_000);
+        assert_eq!(clipped, ticks * 5);
         assert!(bytes < 3 * (1 << 20), "13 hours of health summaries used {bytes} bytes");
     }
 
@@ -256,7 +274,10 @@ mod tests {
         current.counters.trims = 3;
         current.counters.dropped = 4;
         let report = logger.observe(current, at + Duration::from_secs(2), true).unwrap();
-        assert_eq!(report.delta, Counters { frames: 10, incomplete_reference: 2, gaps: 2, trims: 3, dropped: 4, ..Default::default() });
+        assert_eq!(
+            report.delta,
+            Counters { frames: 10, incomplete_reference: 2, gaps: 2, trims: 3, dropped: 4, ..Default::default() }
+        );
         assert_eq!(report.min_coverage, 0.2);
         assert_eq!(report.max_processing_ms, 8.0);
         assert_eq!(report.max_wait_ms, 12.0);
@@ -289,5 +310,35 @@ mod tests {
                 .unwrap()
                 .has_problems()
         );
+    }
+
+    #[test]
+    fn temporary_reserves_are_reported_without_indicating_failed_audio() {
+        let at = Instant::now();
+        let mut logger = HealthLog::default();
+        logger.observe(health(100, 0), at, false).unwrap();
+        let mut sample = health(200, 0);
+        sample.counters.padding = 25;
+        let report = logger.observe(sample, at + REPORT_INTERVAL, false).unwrap();
+        assert_eq!(report.delta.padding, 25);
+        assert!(report.to_string().contains("padding=+25/25"));
+        assert!(!report.has_problems(), "a reserve alone does not establish a missing voice frame");
+    }
+
+    #[test]
+    fn clipping_is_reported_promptly_and_then_aggregated() {
+        let at = Instant::now();
+        let mut logger = HealthLog::default();
+        logger.observe(health(100, 0), at, false).unwrap();
+        let mut sample = health(105, 0);
+        sample.counters.clipped = 1;
+        let first = logger.observe(sample, at + Duration::from_millis(50), false).unwrap();
+        assert!(first.has_problems());
+        assert!(first.to_string().contains("clipped=+1/1"));
+        sample.counters.frames += 5;
+        sample.counters.clipped += 3;
+        assert!(logger.observe(sample, at + Duration::from_millis(100), false).is_none());
+        let final_report = logger.observe(sample, at + Duration::from_millis(150), true).unwrap();
+        assert!(final_report.to_string().contains("clipped=+3/4"));
     }
 }

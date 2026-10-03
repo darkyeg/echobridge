@@ -54,6 +54,13 @@ impl BlockClock {
     pub fn reset(&mut self) {
         self.next = None;
     }
+
+    /// Account for a known number of lost samples without changing the clock's phase.
+    pub fn skip(&mut self, samples: usize) {
+        if let Some(next) = &mut self.next {
+            *next += samples as f64 / self.rate;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -76,6 +83,16 @@ mod tests {
         let resumed = clock.place(2.0, 480);
         assert!(resumed.restarted);
         assert_eq!(resumed.start, 2.0);
+    }
+
+    #[test]
+    fn a_known_lost_block_keeps_clock_phase_despite_timestamp_jitter() {
+        let mut clock = BlockClock::live(48_000);
+        clock.place(1.0, 480);
+        clock.skip(480);
+        let resumed = clock.place(1.0207, 480);
+        assert!(!resumed.restarted);
+        assert!((resumed.start - (1.02 + 0.0007 * 0.002)).abs() < 1e-12);
     }
 
     #[test]

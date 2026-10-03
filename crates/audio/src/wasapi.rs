@@ -4,7 +4,9 @@
 //! voice effects (noise suppression, gating) cannot alter it before echo cancellation; that
 //! processing is nonlinear and makes the playback leak impossible to model. Blocks carry
 //! the audio engine's performance-counter time of their first sample, instead of a
-//! callback-time estimate that jitters by about 0.7 ms. Every stream runs on its own
+//! callback-time estimate that jitters by about 0.7 ms. Invalid stamps recover onto the
+//! same performance-counter axis, preserving a stable correction until a clock change.
+//! Every stream runs on its own
 //! thread at "Pro Audio" (MMCSS) priority.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,12 +18,12 @@ use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, PROPERTYKEY, RPC_E_CHANGED_MODE};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
-    AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_DEVICE_INVALIDATED,
-    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-    AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDCLNT_STREAMOPTIONS_RAW,
-    AudioCategory_Other, AudioClientProperties, DEVICE_STATE_ACTIVE, EDataFlow, IAudioCaptureClient, IAudioClient2,
-    IAudioClient3, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
-    WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eCapture, eConsole, eRender,
+    AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR,
+    AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+    AUDCLNT_STREAMOPTIONS_RAW, AudioCategory_Other, AudioClientProperties, DEVICE_STATE_ACTIVE, EDataFlow,
+    IAudioCaptureClient, IAudioClient2, IAudioClient3, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator,
+    MMDeviceEnumerator, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eCapture, eConsole, eRender,
 };
 use windows::Win32::Media::KernelStreaming::{
     KSAUDIO_SPEAKER_MONO, SPEAKER_FRONT_LEFT, SPEAKER_FRONT_RIGHT, WAVE_FORMAT_EXTENSIBLE,
@@ -31,10 +33,12 @@ use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, STGM_READ,
 };
+use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::Win32::System::Variant::VT_BOOL;
 use windows::core::{GUID, HSTRING, Interface};
 
+use crate::timestamps::CaptureClock;
 use crate::{
     AudioBackend, BlockAssembler, CaptureCallback, CaptureInfo, Device, DeviceId, Direction, Error, Latency, RATE,
     RenderCallback, Source, Stream,
@@ -201,6 +205,7 @@ struct Capture {
     volume: Option<IAudioEndpointVolume>,
     event: Event,
     info: CaptureInfo,
+    source: Source,
 }
 
 impl Capture {
@@ -248,7 +253,7 @@ impl Capture {
                 .and_then(|capture| client.Start().map(|()| capture))
         }
         .map_err(system("Starting the audio device"))?;
-        Ok(Self { client, capture, volume, event, info: CaptureInfo { channels, raw } })
+        Ok(Self { client, capture, volume, event, info: CaptureInfo { channels, raw }, source })
     }
 
     fn gain(&self) -> f32 {
@@ -271,6 +276,16 @@ impl Capture {
         let mut assembler = BlockAssembler::new(channels, frames);
         let mut gain = self.gain();
         let result = (|| {
+            let mut frequency = 0i64;
+            // SAFETY: the output pointer is valid. Read the counter frequency once per stream.
+            unsafe { QueryPerformanceFrequency(&mut frequency) }.map_err(read_error)?;
+            // SAFETY: plain COM call on the initialized capture client.
+            let buffer_frames = unsafe { self.client.GetBufferSize() }.map_err(read_error)?;
+            let buffer_seconds = f64::from(buffer_frames) / f64::from(RATE);
+            let mut clock = CaptureClock::default();
+            let mut last_warning = None;
+            let mut reanchors = 0u64;
+            let mut timestamp_errors = 0u64;
             while !stop.load(Ordering::Relaxed) {
                 self.event.wait(WAIT_MS);
                 loop {
@@ -292,7 +307,28 @@ impl Capture {
                     let samples =
                         (!silent).then(|| unsafe { std::slice::from_raw_parts(data.cast::<f32>(), frames * channels) });
                     let discontinuity = flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0;
-                    assembler.push(samples, frames, time as f64 * 1e-7, discontinuity, gain, callback);
+                    let timestamp_error = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0;
+                    let mut counter = 0i64;
+                    // SAFETY: the output pointer is valid; the counter shares the packet's epoch.
+                    unsafe { QueryPerformanceCounter(&mut counter) }.map_err(read_error)?;
+                    let now = counter as f64 / frequency as f64;
+                    let reported = time as f64 * 1e-7;
+                    let placed =
+                        clock.place((!timestamp_error).then_some(reported), now, frames, buffer_seconds, discontinuity);
+                    reanchors = reanchors.saturating_add(u64::from(placed.reanchored));
+                    timestamp_errors = timestamp_errors.saturating_add(u64::from(timestamp_error));
+                    if (placed.reanchored || timestamp_error) && last_warning.is_none_or(|last| now - last >= 30.0) {
+                        log::warn!(
+                            "capture timestamp recovered: loopback={} reported_age={:.1}ms correction={:.1}ms reanchors={} timestamp_errors={}",
+                            self.source == Source::Loopback,
+                            (now - reported) * 1000.0,
+                            placed.offset * 1000.0,
+                            reanchors,
+                            timestamp_errors,
+                        );
+                        last_warning = Some(now);
+                    }
+                    assembler.push(samples, frames, placed.time, placed.discontinuity, gain, callback);
                     // SAFETY: releases exactly the frames obtained above.
                     unsafe { self.capture.ReleaseBuffer(count) }.map_err(read_error)?;
                 }

@@ -28,18 +28,26 @@ pub struct ReferenceTimeline {
     blocks: VecDeque<Block>,
     // Reused by `frame`: every sample time and value of the overlapping blocks.
     points: Vec<(f64, Stereo)>,
+    generation: u64,
 }
 
 impl ReferenceTimeline {
     pub fn new(rate: u32) -> Self {
-        Self { rate: f64::from(rate), clock: BlockClock::live(rate), blocks: VecDeque::new(), points: Vec::new() }
+        Self {
+            rate: f64::from(rate),
+            clock: BlockClock::live(rate),
+            blocks: VecDeque::new(),
+            points: Vec::new(),
+            generation: 0,
+        }
     }
 
     /// Add a playback block whose first sample played at `timestamp` seconds.
     pub fn append(&mut self, samples: &[Stereo], timestamp: f64) {
         let placed = self.clock.place(timestamp, samples.len());
-        if placed.restarted {
+        if placed.restarted && !self.blocks.is_empty() {
             // A jump in time: what came before belongs to another timeline.
+            self.generation += 1;
             self.blocks.clear();
         }
         self.blocks.push_back(Block { start: placed.start, samples: samples.to_vec() });
@@ -89,8 +97,16 @@ impl ReferenceTimeline {
     }
 
     pub fn clear(&mut self) {
+        if self.clock.next().is_some() {
+            self.generation += 1;
+        }
         self.blocks.clear();
         self.clock.reset();
+    }
+
+    /// Stream restarts after the initial append, including explicit discontinuities.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 }
 
@@ -171,6 +187,20 @@ mod tests {
         let mut out = vec![[0.0; 2]; 480];
         assert_eq!(timeline.frame(0.0, &mut out), 0.0);
         assert!(timeline.covers(5.01) && !timeline.covers(5.02));
+        assert_eq!(timeline.generation(), 1);
+    }
+
+    #[test]
+    fn an_explicit_restart_is_counted_once_and_drops_old_reference() {
+        let mut timeline = ReferenceTimeline::new(48_000);
+        timeline.clear();
+        timeline.append(&ramp(0, 480), 0.0);
+        assert_eq!(timeline.generation(), 0);
+        timeline.clear();
+        timeline.append(&ramp(480, 480), 0.02);
+        assert_eq!(timeline.generation(), 1);
+        assert_eq!(timeline.frame(0.0, &mut [[1.0; 2]; 480]), 0.0);
+        assert!(timeline.frame(0.02, &mut [[0.0; 2]; 480]) > 0.99);
     }
 
     #[test]

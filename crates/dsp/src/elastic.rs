@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 
 /// Fill the buffer aims for, in seconds: enough to ride out scheduling jitter.
 const TARGET: f64 = 0.01;
-/// Above this fill (seconds) the buffer is cut back to `TRIM_TO`; delay must never pile up.
+/// Above this fill (seconds) the buffer is cut back to its reserve; delay must never pile up.
 const MAXIMUM: f64 = 0.15;
 const TRIM_TO: f64 = 0.02;
 /// Fill errors within this many seconds are jitter and leave the audio untouched.
@@ -30,6 +30,8 @@ pub struct ElasticBuffer {
     pub underflows: u64,
     /// Times the buffer was cut back because audio piled up.
     pub trims: u64,
+    /// Temporary silence reserves added before a reference wait.
+    pub padding_events: u64,
 }
 
 impl ElasticBuffer {
@@ -45,21 +47,54 @@ impl ElasticBuffer {
             deadband: samples(DEADBAND),
             underflows: 0,
             trims: 0,
+            padding_events: 0,
         }
     }
 
     /// Aim for `seconds` of audio, at least the default 10 ms. A higher target is reached at
     /// once with silence, so the extra margin is there for the next late frame.
     pub fn set_target(&mut self, seconds: f64) {
-        let target = ((self.rate * seconds.max(TARGET)) as usize).min(self.trim_to);
+        // Leave one normal frame below the queue limit, including at the largest shift.
+        let target = ((self.rate * seconds.max(TARGET)) as usize).min(self.maximum - (self.rate * TARGET) as usize);
         if target > self.target {
-            self.data.extend(std::iter::repeat_n(0.0, target - self.target));
+            let padding = (target - self.target)
+                .max(target.saturating_sub(self.data.len()))
+                .min(self.maximum.saturating_sub(self.data.len()));
+            self.data.extend(std::iter::repeat_n(0.0, padding));
+        } else if target < self.target && self.data.len() > target + self.deadband {
+            // A smaller alignment shift must not leave a minute of excess latency while
+            // the clock-drift correction removes only one sample per callback.
+            self.data.drain(..self.data.len() - target - self.deadband);
+            self.trims += 1;
         }
         self.target = target;
     }
 
     pub fn target_seconds(&self) -> f64 {
         self.target as f64 / self.rate
+    }
+
+    /// Reserve one upcoming wait without raising the steady clock-drift target. Once
+    /// consumed, the silence does not leave a permanent queue of added latency.
+    pub fn reserve(&mut self, seconds: f64) -> usize {
+        let reserve = ((self.rate * seconds.max(0.0)) as usize).min(self.maximum - (self.rate * TARGET) as usize);
+        if self.data.len() < reserve {
+            let added = reserve - self.data.len();
+            self.data.resize(reserve, 0.0);
+            self.padding_events += 1;
+            added
+        } else {
+            0
+        }
+    }
+
+    /// Remove unused tail silence when that wait ends early. Call before pushing the
+    /// processed frame: only the reserve can then occupy the tail, never new speech.
+    pub fn release_reserve(&mut self, added: usize) {
+        // The next voice frame replenishes the queue. Keeping a target-sized tail here
+        // would leave reserved silence between consecutive voice frames.
+        let unused = added.min(self.data.len());
+        self.data.truncate(self.data.len() - unused);
     }
 
     pub fn len(&self) -> usize {
@@ -73,7 +108,7 @@ impl ElasticBuffer {
     pub fn push(&mut self, samples: &[f32]) {
         self.data.extend(samples);
         if self.data.len() > self.maximum {
-            let excess = self.data.len() - self.trim_to;
+            let excess = self.data.len() - self.trim_to.max(self.target);
             self.data.drain(..excess);
             self.trims += 1;
         }
@@ -221,6 +256,83 @@ mod tests {
         buffer.pull(&mut [0.0; 8000]);
         assert_eq!(buffer.len(), 6240, "underflow must restore the reference reserve");
         assert!(buffer.len() < 7200, "the queue remains bounded");
+    }
+
+    #[test]
+    fn reducing_a_reference_delay_removes_excess_latency_immediately() {
+        let mut buffer = ElasticBuffer::new(48_000);
+        buffer.set_target(0.133);
+        buffer.set_target(0.01);
+        assert!(buffer.len() <= 960);
+        assert_eq!(buffer.trims, 1);
+        buffer.set_target(f64::INFINITY);
+        assert!((buffer.target_seconds() - 0.14).abs() < 1e-9);
+        assert!(buffer.len() <= 7200);
+    }
+
+    #[test]
+    fn a_temporary_reference_wait_does_not_raise_steady_latency() {
+        let mut buffer = ElasticBuffer::new(48_000);
+        buffer.set_target(0.02);
+        buffer.reserve(0.103);
+        assert_eq!(buffer.len(), 4944);
+        assert_eq!(buffer.padding_events, 1);
+        assert!((buffer.target_seconds() - 0.02).abs() < 1e-9);
+        for _ in 0..8 {
+            buffer.pull(&mut [0.0; 480]);
+        }
+        assert!(buffer.len() <= 1200, "the 80 ms wait consumed the temporary reserve");
+        assert_eq!(buffer.underflows, 0);
+        buffer.push(&[0.5; 480]);
+        buffer.reserve(0.033);
+        buffer.pull(&mut [0.0; 480]);
+        let settled = buffer.padding_events;
+        for _ in 0..200 {
+            buffer.push(&[0.5; 480]);
+            buffer.reserve(0.033);
+            buffer.pull(&mut [0.0; 480]);
+        }
+        assert!(buffer.len() <= 1440, "steady fill stayed near 20 ms");
+        assert_eq!(buffer.padding_events, settled, "steady flow must not keep inserting silence");
+        buffer.pull(&mut [0.0; 8000]);
+        assert_eq!(buffer.len(), 960, "underflow restores the steady target");
+    }
+
+    #[test]
+    fn an_early_reference_arrival_reclaims_only_unused_silence() {
+        let mut buffer = ElasticBuffer::new(48_000);
+        buffer.push(&[0.5; 480]);
+        let added = buffer.reserve(0.103);
+        buffer.release_reserve(added);
+        assert!(buffer.len() <= 960, "an early arrival must not leave a large backlog");
+        let mut out = [0.0; 480];
+        buffer.pull(&mut out);
+        assert_eq!(out, [0.0; 480]);
+        buffer.push(&[0.75; 480]);
+        buffer.pull(&mut out);
+        assert_eq!(out, [0.5; 480], "queued voice preceding the reserve stays intact");
+        buffer.push(&[0.25; 480]);
+        buffer.pull(&mut out);
+        assert_eq!(out, [0.75; 480], "voice added after reclaiming is preserved too");
+    }
+
+    #[test]
+    fn releasing_a_reserve_after_rendering_keeps_consecutive_voice_frames() {
+        let mut buffer = ElasticBuffer::new(48_000);
+        buffer.set_target(0.02);
+        buffer.push(&[0.5; 960]);
+        buffer.pull(&mut [0.0; 960]);
+        let added = buffer.reserve(0.033);
+        let mut out = [0.0; 480];
+        buffer.pull(&mut out);
+        assert!(out.iter().all(|&sample| sample == 0.5));
+        buffer.release_reserve(added);
+        buffer.push(&[0.75; 480]);
+        buffer.pull(&mut out);
+        assert!(out.iter().all(|&sample| sample == 0.5), "the remaining older voice stays intact");
+        buffer.push(&[0.25; 480]);
+        buffer.pull(&mut out);
+        assert!(out.iter().all(|&sample| sample == 0.75), "unused reserve must not mute the next voice frame");
     }
 
     #[test]

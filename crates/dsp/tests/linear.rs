@@ -26,6 +26,41 @@ fn removes_a_strong_stereo_leak_after_a_few_seconds() {
 }
 
 #[test]
+fn incomplete_reference_cannot_train_a_filter_and_complete_reference_can_recover() {
+    let signal = jack_leak(12, None);
+    let near = to_f32(&signal.leak);
+    let far = interleave(&signal.music[0], &signal.music[1]);
+    let mut canceller = LinearCanceller::new(LinearConfig::default());
+    let mut output = vec![0.0; near.len()];
+    canceller.process_unadapted(&near, &far, &mut output).unwrap();
+    assert_eq!(canceller.adoptions(), 0);
+    assert_eq!(output, near, "untrusted reference must not teach the output filter");
+    canceller.clear_history();
+    canceller.process(&near, &far, &mut output).unwrap();
+    let settled = 8 * R..;
+    let output: Vec<f64> = output.into_iter().map(f64::from).collect();
+    let removed = db(&signal.leak[settled.clone()]) - db(&output[settled]);
+    assert!(removed > 40.0, "recovered removal: {removed:.1} dB");
+}
+
+#[test]
+fn a_moved_microphone_path_recovers_without_a_manual_retrain() {
+    let signal = jack_leak(20, None);
+    let moved = 8 * R;
+    let near: Vec<f64> = signal
+        .leak
+        .iter()
+        .enumerate()
+        .map(|(i, &sample)| if i < moved { sample } else { 0.7 * signal.leak[i - 48] })
+        .collect();
+    let output = cancel(&signal, &near);
+    for (label, part, minimum) in [("before movement", 6 * R..8 * R, 30.0), ("after recovery", 18 * R..20 * R, 30.0)] {
+        let removed = db(&near[part.clone()]) - db(&output[part]);
+        assert!(removed > minimum, "{label}: removed {removed:.1} dB");
+    }
+}
+
+#[test]
 fn speech_passes_unchanged_while_the_leak_is_removed() {
     let signal = jack_leak(28, Some(10));
     let near: Vec<f64> = signal.leak.iter().zip(&signal.voice).map(|(l, v)| l + v).collect();

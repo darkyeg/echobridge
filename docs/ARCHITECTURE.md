@@ -38,11 +38,12 @@ EchoBridge is one `EchoBridge.exe`, built from the Cargo workspace at the reposi
 - **Capture.**
   - The microphone opens in RAW mode when the device supports it, so Windows voice effects cannot gate it before echo removal. The stream category stays "Other", so Windows does not duck music.
   - Every block is stamped with the performance-counter time that WASAPI reports for its first frame, so the microphone and the loopback share one clock.
+  - Capture checks stamps against the current performance counter and the device's buffer duration. Implausible stamps (including a measured loopback stamp 3.49 seconds in the future) receive a stable offset; healthy stamps retain their precision. `TIMESTAMP_ERROR` packets continue the sample clock when possible and reanchor after gaps. A changed mapping marks a discontinuity so the engine retrains. Recovery warnings include the correction and cumulative counts, at most once per 30 seconds per stream. See Microsoft's [GetBuffer](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getbuffer) and [timestamp flags](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/ne-audioclient-_audclnt_bufferflags) contracts.
   - Loopback blocks are scaled by the endpoint volume, which Windows applies after the loopback tap.
 - **Processing.**
   - The processing thread runs at MMCSS "Pro Audio" priority.
   - It places each 10 ms microphone block on the device clock and waits up to 20 ms plus any positive alignment shift (from the block's arrival) for matching playback. The output reserves enough audio for that wait, with a bounded queue. Missing reference becomes silence and counts against reference coverage; Clean voice does not learn a new filter from incomplete reference.
-  - A lost microphone block marks the next delivered block as discontinuous. Loopback discontinuities clear the reference timeline. A brief gap clears stream history while retaining the learned Clean voice filter; an alignment change retrains it.
+  - Lost microphone blocks carry their skipped sample count to the next delivered block, preserving the clock's phase instead of smoothing away the gap. Device discontinuities discard partial packets; loopback discontinuities clear the reference timeline. Gaps that keep the clock mapping clear stream history while retaining the learned Clean voice filter. Changed microphone clock phase, a restarted reference timeline, and alignment changes retrain the obsolete path.
   - It runs the `Pipeline` and feeds the `ElasticBuffer`.
 - **Alignment.** Windows timestamps can carry a bias between the loopback and the microphone that changes while the system runs. On the test headset the leak appeared 0.6 ms before its reference one morning and 19 ms before it that evening.
   - The canceller only models leaks that come *after* the reference, so an early leak removed about 1 dB, in Python 0.3.3 as well as in Rust.
@@ -50,7 +51,7 @@ EchoBridge is one `EchoBridge.exe`, built from the Cargo workspace at the reposi
   - Reading the reference later adds the same delay to the clean microphone (about 22 ms in the evening case). After the fix, the same song lost 17–25 dB with noise removal Off.
 - **Output.**
   - The clean microphone renders in shared low-latency mode (`IAudioClient3`, the device's smallest period) when the device runs 32-bit float at 48 kHz. Otherwise it uses a normal 20 ms buffer.
-  - The `ElasticBuffer` normally targets 10 ms. Positive reference shifts add the necessary wait and scheduling margin, capped below the 150 ms queue limit. Trimming and underflow preserve that reserve. Within ±10 ms of the target it passes audio through bit-exact. It resamples only for real clock drift, because interpolation dulls high frequencies, and it trims an excessive backlog.
+  - The `ElasticBuffer` targets 10 ms, or 20 ms when a positive reference shift makes delivery less even. Before a reference wait, it temporarily reserves the actual missing reference duration plus scheduling margin, capped one frame below the 150 ms queue limit. The reserve remains through processing; unused tail silence is reclaimed and replaced with the processed voice under one lock, keeping consecutive voice frames intact. The steady target stays unchanged. Underflow restores the steady margin, and a smaller target removes surplus delay immediately. Within ±10 ms of the target it passes audio through bit-exact. It resamples only for real clock drift, because interpolation dulls high frequencies, and it trims an excessive backlog.
 - **Keep-alive.** The engine plays silence to the headphones in normal mode, because Windows loopback stops delivering while nothing plays.
 - **Window.**
   - The window never waits on audio. `Service` runs engine start, stop and option changes on a control thread.
@@ -62,9 +63,11 @@ Pause (`set_processing(false)`) forwards the raw microphone through the same str
 
 ## Diagnostics
 
-Audio threads enqueue log messages without waiting for disk writes. The logging thread rotates the active file at 1 MiB and retains `echobridge.old.log`, `echobridge.old2.log`, and `echobridge.old3.log`. An oversized log from an older version is preserved when first rotated.
+Audio threads enqueue log messages without waiting for disk writes. The logging thread rotates the active file at 1 MiB and retains `echobridge.old.log`, `echobridge.old2.log`, and `echobridge.old3.log`. An oversized log from an older version is preserved when first rotated. Failed rotation preserves existing history without appending past the limit; queue or storage losses are counted and reported when logging recovers.
 
-The first audio-health problem is logged promptly, followed by one aggregate summary every 30 seconds. Summaries retain counter deltas and totals, incomplete-reference percentage, and sampled timing and buffer extremes. Pause, resume, option changes, failures, and shutdown preserve pending counters. Discrete state changes remain immediate. Saturated logging queues count skipped messages instead of blocking audio.
+The first audio-health problem is logged promptly, followed by one aggregate summary every 30 seconds. Summaries retain counter deltas and totals, incomplete-reference percentage, retraining and stream-reset counts, clipped microphone-input frames, current modes and capture/AI flags, and sampled timing and buffer extremes. Clipping is aggregated instead of logging each onset. Temporary reserves are counted as information; reserves alone do not establish an audible gap. Pause, resume, option changes, failures, and shutdown preserve pending counters; shutdown joins the worker before taking the final summary. Discrete state changes remain immediate. Saturated logging queues count skipped messages instead of blocking audio.
+
+Moving a microphone can change the acoustic leak path even when reference timestamps remain stable. Clean voice validates a new path shape over five seconds of suitable audio to protect overlapping speech. After accepting a candidate, foreground fit and energy are rebased to that filter before starting another trial; measurements from the old path must not impose another shape-validation period. This recovery is not instantaneous, and a full reference alone does not prove echo removal.
 
 ## Measured delay
 
@@ -75,7 +78,7 @@ These figures are the microphone-to-CABLE-Output delay, measured on 2026-10-02 w
 | Off | 78–89 ms | 131–134 ms |
 | AI | 146–154 ms | 179 ms |
 
-Most of the remaining delay is VB-CABLE's own buffer (`VBAudioCableWDM_Latency` = 7168 samples, up to 149 ms, set in its control panel) and it varies between runs. EchoBridge's own share is about 25 ms.
+Most of the remaining delay in those measurements was VB-CABLE's own buffer (`VBAudioCableWDM_Latency` = 7168 samples, up to 149 ms, set in its control panel) and it varied between runs. EchoBridge's own share was about 25 ms. Temporarily waiting for late reference adds the necessary delay; current physical-device latency has not been remeasured.
 
 Processing costs 0.15–0.2 ms per 10 ms frame, or about 2 ms with AI. Memory is about 22 MB private.
 
