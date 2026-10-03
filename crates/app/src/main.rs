@@ -7,6 +7,7 @@
 mod app;
 mod cli;
 mod devices;
+mod diagnostics;
 mod leak_test;
 mod logging;
 mod platform;
@@ -29,7 +30,9 @@ fn main() -> ExitCode {
     match command {
         cli::Command::Window(launch) => {
             logging::init(&settings::data_dir());
-            match app::run(launch) {
+            let result = app::run(launch);
+            log::logger().flush();
+            match result {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     platform::attach_console();

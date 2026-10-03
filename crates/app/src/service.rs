@@ -7,7 +7,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use echobridge_audio::AudioBackend;
-use echobridge_engine::{Engine, EngineConfig, Levels, Meters, Options, Stats};
+use echobridge_engine::{EchoMode, Engine, EngineConfig, Levels, Meters, NoiseRemoval, Options, Stats};
+
+use crate::diagnostics::{Counters, Health, HealthLog};
 
 /// How often statistics are copied for the window.
 const REFRESH: Duration = Duration::from_millis(50);
@@ -71,11 +73,12 @@ impl Service {
             .spawn(move || {
                 let mut engine: Option<Engine> = None;
                 let mut logged = Stats::default();
+                let mut health_log = HealthLog::default();
                 let update = |change: &dyn Fn(&mut Snapshot)| change(&mut shared.lock().unwrap());
                 loop {
                     match receiver.recv_timeout(REFRESH) {
                         Ok(Request::Start(config)) => {
-                            engine = None; // close the old devices before opening new ones
+                            stop_engine(&mut engine, &mut health_log);
                             update(&|s| {
                                 s.phase = Phase::Starting;
                                 s.config = Some(config.clone());
@@ -85,6 +88,7 @@ impl Service {
                             match Engine::start(backend.clone(), config) {
                                 Ok(started) => {
                                     logged = Stats::default();
+                                    health_log = HealthLog::default();
                                     engine = Some(started);
                                     update(&|s| s.phase = Phase::Running);
                                 }
@@ -95,14 +99,17 @@ impl Service {
                             }
                         }
                         Ok(Request::Stop) => {
+                            stop_engine(&mut engine, &mut health_log);
                             log::info!("turned off");
-                            engine = None;
                             update(&|s| {
                                 s.phase = Phase::Off;
                                 s.stats = None;
                             });
                         }
                         Ok(Request::Options(options)) => {
+                            if let Some(running) = &engine {
+                                log_health(&mut health_log, &running.stats(), true);
+                            }
                             log::info!("options: {options:?}");
                             if let Some(running) = &mut engine
                                 && let Err(error) = running.set_options(options)
@@ -116,6 +123,9 @@ impl Service {
                             });
                         }
                         Ok(Request::Processing(processing)) => {
+                            if let Some(running) = &engine {
+                                log_health(&mut health_log, &running.stats(), true);
+                            }
                             log::info!("{}", if processing { "protecting" } else { "paused" });
                             if let Some(running) = &engine {
                                 running.set_processing(processing);
@@ -126,19 +136,23 @@ impl Service {
                                 }
                             });
                         }
-                        Ok(Request::Quit) | Err(RecvTimeoutError::Disconnected) => return,
+                        Ok(Request::Quit) | Err(RecvTimeoutError::Disconnected) => {
+                            stop_engine(&mut engine, &mut health_log);
+                            return;
+                        }
                         Err(RecvTimeoutError::Timeout) => {}
                     }
                     if let Some(running) = &engine {
                         if let Some(failure) = running.failure() {
+                            stop_engine(&mut engine, &mut health_log);
                             log::warn!("stopped: {failure}");
-                            engine = None;
                             update(&|s| {
                                 s.phase = Phase::Failed(failure.clone());
                                 s.stats = None;
                             });
                         } else {
                             let stats = running.stats();
+                            log_health(&mut health_log, &stats, false);
                             log_changes(&logged, &stats);
                             logged = stats.clone();
                             update(&|s| s.stats = Some(stats.clone()));
@@ -191,21 +205,6 @@ impl Drop for Service {
 /// Log what went wrong in the audio since the last snapshot: each of these can be heard in
 /// a call as a gap, a jump, or the song coming back.
 fn log_changes(before: &Stats, now: &Stats) {
-    let counters = [
-        ("output gaps (call app heard silence)", before.output_underflows, now.output_underflows),
-        ("output trims (audio skipped to cut delay)", before.output_trims, now.output_trims),
-        ("microphone blocks dropped (processing fell behind)", before.dropped_blocks, now.dropped_blocks),
-        (
-            "frames with incomplete playback reference",
-            before.incomplete_reference_frames,
-            now.incomplete_reference_frames,
-        ),
-    ];
-    for (what, before, now) in counters {
-        if now > before {
-            log::warn!("{what}: +{} (total {now})", now - before);
-        }
-    }
     if now.ai_overloaded != before.ai_overloaded {
         log::warn!(
             "AI noise removal {}",
@@ -217,6 +216,51 @@ fn log_changes(before: &Stats, now: &Stats) {
     }
     if now.clipping && !before.clipping {
         log::info!("microphone clipping");
+    }
+}
+
+/// Join first so the summary includes any frame that was still being processed at stop.
+fn stop_engine(engine: &mut Option<Engine>, health_log: &mut HealthLog) {
+    if let Some(mut running) = engine.take() {
+        running.stop();
+        log_health(health_log, &running.stats(), true);
+    }
+}
+
+fn log_health(logger: &mut HealthLog, stats: &Stats, force: bool) {
+    let health = Health {
+        counters: Counters {
+            frames: stats.frames,
+            incomplete_reference: stats.incomplete_reference_frames,
+            gaps: stats.output_underflows,
+            trims: stats.output_trims,
+            dropped: stats.dropped_blocks,
+            retrained: stats.canceller_retrains,
+            stream_resets: stats.stream_resets,
+            reference_discontinuities: stats.reference_discontinuities,
+        },
+        processing: stats.processing,
+        coverage: stats.reference_coverage,
+        reference_shift_ms: stats.reference_shift_ms,
+        output_buffer_ms: stats.output_buffer_ms,
+        processing_ms: stats.processing_ms,
+        reference_wait_ms: stats.reference_wait_ms,
+        echo_mode: match stats.options.echo {
+            EchoMode::CleanVoice => "clean", EchoMode::Adaptive => "adaptive", EchoMode::Strong => "strong",
+        },
+        noise_mode: match stats.options.noise {
+            NoiseRemoval::Off => "off", NoiseRemoval::Standard => "standard", NoiseRemoval::Ai => "ai",
+        },
+        raw_microphone: stats.raw_microphone,
+        audio_priority: stats.audio_priority,
+        ai_overloaded: stats.ai_overloaded,
+    };
+    if let Some(report) = logger.observe(health, std::time::Instant::now(), force) {
+        if report.has_problems() {
+            log::warn!("{report}");
+        } else {
+            log::info!("{report}");
+        }
     }
 }
 

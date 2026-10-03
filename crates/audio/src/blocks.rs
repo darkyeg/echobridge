@@ -79,6 +79,21 @@ impl BlockAssembler {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_device_discontinuity_discards_pending_audio_even_with_contiguous_timestamps() {
+        let mut assembler = BlockAssembler::new(1, 480);
+        let mut blocks = Vec::new();
+        let mut emit = |b: CaptureBlock<'_>| blocks.push((b.time, b.discontinuity, b.samples.to_vec()));
+        assembler.push(Some(&[1.0; 240]), 240, 0.0, false, 1.0, &mut emit);
+        assembler.push(Some(&[2.0; 240]), 240, 0.005, true, 1.0, &mut emit);
+        assembler.push(Some(&[2.0; 240]), 240, 0.01, false, 1.0, &mut emit);
+        assert_eq!(assembler.discarded_frames, 240);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].0, 0.005);
+        assert!(blocks[0].1);
+        assert!(blocks[0].2.iter().all(|&s| s == 2.0));
+    }
+
     fn collect(assembler: &mut BlockAssembler, packets: &[(usize, f64)]) -> Vec<(f64, bool, Vec<f32>)> {
         let mut blocks = Vec::new();
         let mut counter = 0.0;

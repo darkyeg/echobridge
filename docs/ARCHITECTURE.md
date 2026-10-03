@@ -41,7 +41,8 @@ EchoBridge is one `EchoBridge.exe`, built from the Cargo workspace at the reposi
   - Loopback blocks are scaled by the endpoint volume, which Windows applies after the loopback tap.
 - **Processing.**
   - The processing thread runs at MMCSS "Pro Audio" priority.
-  - It places each 10 ms microphone block on the device clock and waits up to 20 ms (from the block's arrival) for the playback that played during it. Missing reference becomes silence and counts against reference coverage.
+  - It places each 10 ms microphone block on the device clock and waits up to 20 ms plus any positive alignment shift (from the block's arrival) for matching playback. The output reserves enough audio for that wait, with a bounded queue. Missing reference becomes silence and counts against reference coverage; Clean voice does not learn a new filter from incomplete reference.
+  - A lost microphone block marks the next delivered block as discontinuous. Loopback discontinuities clear the reference timeline. A brief gap clears stream history while retaining the learned Clean voice filter; an alignment change retrains it.
   - It runs the `Pipeline` and feeds the `ElasticBuffer`.
 - **Alignment.** Windows timestamps can carry a bias between the loopback and the microphone that changes while the system runs. On the test headset the leak appeared 0.6 ms before its reference one morning and 19 ms before it that evening.
   - The canceller only models leaks that come *after* the reference, so an early leak removed about 1 dB, in Python 0.3.3 as well as in Rust.
@@ -49,7 +50,7 @@ EchoBridge is one `EchoBridge.exe`, built from the Cargo workspace at the reposi
   - Reading the reference later adds the same delay to the clean microphone (about 22 ms in the evening case). After the fix, the same song lost 17–25 dB with noise removal Off.
 - **Output.**
   - The clean microphone renders in shared low-latency mode (`IAudioClient3`, the device's smallest period) when the device runs 32-bit float at 48 kHz. Otherwise it uses a normal 20 ms buffer.
-  - The `ElasticBuffer` targets 10 ms. Within ±10 ms of that target it passes audio through bit-exact. It resamples only for real clock drift, because interpolation dulls high frequencies, and it trims an excessive backlog.
+  - The `ElasticBuffer` normally targets 10 ms. Positive reference shifts add the necessary wait and scheduling margin, capped below the 150 ms queue limit. Trimming and underflow preserve that reserve. Within ±10 ms of the target it passes audio through bit-exact. It resamples only for real clock drift, because interpolation dulls high frequencies, and it trims an excessive backlog.
 - **Keep-alive.** The engine plays silence to the headphones in normal mode, because Windows loopback stops delivering while nothing plays.
 - **Window.**
   - The window never waits on audio. `Service` runs engine start, stop and option changes on a control thread.
@@ -57,7 +58,13 @@ EchoBridge is one `EchoBridge.exe`, built from the Cargo workspace at the reposi
   - Meter lag is under about 80 ms: one 10 ms frame, up to 33 ms to the next read, one display frame, and a 30 ms slide.
   - The software renderer keeps memory low without a GPU context. With the window open, drawing costs about 60 ms of one core per second.
 
-Pause (`set_processing(false)`) forwards the raw microphone through the same streams. Resume resets the processors on the next frame. Only Turn off, Quit or a device failure closes the streams.
+Pause (`set_processing(false)`) forwards the raw microphone through the same streams. Resume retrains the processors on the next frame and discards old lag measurements while keeping the known timestamp correction. Only Turn off, Quit or a device failure closes the streams.
+
+## Diagnostics
+
+Audio threads enqueue log messages without waiting for disk writes. The logging thread rotates the active file at 1 MiB and retains `echobridge.old.log`, `echobridge.old2.log`, and `echobridge.old3.log`. An oversized log from an older version is preserved when first rotated.
+
+The first audio-health problem is logged promptly, followed by one aggregate summary every 30 seconds. Summaries retain counter deltas and totals, incomplete-reference percentage, and sampled timing and buffer extremes. Pause, resume, option changes, failures, and shutdown preserve pending counters. Discrete state changes remain immediate. Saturated logging queues count skipped messages instead of blocking audio.
 
 ## Measured delay
 

@@ -211,6 +211,19 @@ mod tests {
     }
 
     #[test]
+    fn a_long_reference_delay_keeps_its_margin_after_trimming_and_underflow() {
+        let mut buffer = ElasticBuffer::new(48_000);
+        buffer.set_target(0.13);
+        assert_eq!(buffer.len(), 6240, "reserve the learned reference delay");
+        buffer.push(&vec![0.5; 24_000]);
+        assert_eq!(buffer.trims, 1);
+        assert_eq!(buffer.len(), 6240, "trimming must preserve the reference reserve");
+        buffer.pull(&mut [0.0; 8000]);
+        assert_eq!(buffer.len(), 6240, "underflow must restore the reference reserve");
+        assert!(buffer.len() < 7200, "the queue remains bounded");
+    }
+
+    #[test]
     fn piled_up_audio_is_trimmed() {
         let mut buffer = ElasticBuffer::new(48_000);
         buffer.push(&vec![0.0; 48_000]);
