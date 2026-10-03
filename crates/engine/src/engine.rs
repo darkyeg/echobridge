@@ -471,7 +471,6 @@ impl Worker {
             let realigned = coverage > 0.99 && self.alignment.update(&block.samples, &self.far);
             if realigned {
                 let shift = self.alignment.shift();
-                self.output.lock().unwrap().set_target(if shift > 0.0 { 0.02 } else { 0.01 });
                 log::info!("leak moved; reading the reference {:.1} ms after the microphone", shift * 1e3);
                 // The alignment measurement used the old read point. Process this frame
                 // with the new reference too, so a retrain never starts on the wrong path.
@@ -588,7 +587,7 @@ impl Worker {
             timeline.end().map_or(remaining, |latest| (end - latest).max(0.0))
         };
         // Prime only the actual future reference deficit plus delivery/processing jitter.
-        // The clock-drift target stays at 10/20 ms after this one wait consumes the reserve.
+        // The clock-drift target stays at 20 ms after this one wait consumes the reserve.
         self.output.lock().unwrap().reserve(missing.min(remaining) + REFERENCE_WAIT.as_secs_f64() + OUTPUT_MARGIN)
     }
 }

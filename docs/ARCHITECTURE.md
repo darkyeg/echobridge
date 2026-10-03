@@ -51,7 +51,7 @@ EchoBridge is one `EchoBridge.exe`, built from the Cargo workspace at the reposi
   - Reading the reference later adds the same delay to the clean microphone (about 22 ms in the evening case). After the fix, the same song lost 17–25 dB with noise removal Off.
 - **Output.**
   - The clean microphone renders in shared low-latency mode (`IAudioClient3`, the device's smallest period) when the device runs 32-bit float at 48 kHz. Otherwise it uses a normal 20 ms buffer.
-  - The `ElasticBuffer` targets 10 ms, or 20 ms when a positive reference shift makes delivery less even. Before a reference wait, it temporarily reserves the actual missing reference duration plus scheduling margin, capped one frame below the 150 ms queue limit. The reserve remains through processing; unused tail silence is reclaimed and replaced with the processed voice under one lock, keeping consecutive voice frames intact. The steady target stays unchanged. Underflow restores the steady margin, and a smaller target removes surplus delay immediately. Within ±10 ms of the target it passes audio through bit-exact. It resamples only for real clock drift, because interpolation dulls high frequencies, and it trims an excessive backlog.
+  - The `ElasticBuffer` targets 20 ms. Its ±10 ms jitter band then leaves a 10 ms reserve at the lower edge, so a slower microphone clock is corrected before whole device packets run dry. A 10 ms target with the same band exhausted this reserve before correction began. Before a reference wait, it temporarily reserves the actual missing reference duration plus scheduling margin, capped one frame below the 150 ms queue limit. The reserve remains through processing; unused tail silence is reclaimed and replaced with the processed voice under one lock, keeping consecutive voice frames intact. The steady target stays unchanged. Underflow restores the steady margin, and a smaller target removes surplus delay immediately. Within ±10 ms of the target it passes audio through bit-exact. It resamples only for real clock drift, because interpolation dulls high frequencies, and it trims an excessive backlog.
 - **Keep-alive.** The engine plays silence to the headphones in normal mode, because Windows loopback stops delivering while nothing plays.
 - **Window.**
   - The window never waits on audio. `Service` runs engine start, stop and option changes on a control thread.
@@ -78,7 +78,7 @@ These figures are the microphone-to-CABLE-Output delay, measured on 2026-10-02 w
 | Off | 78–89 ms | 131–134 ms |
 | AI | 146–154 ms | 179 ms |
 
-Most of the remaining delay in those measurements was VB-CABLE's own buffer (`VBAudioCableWDM_Latency` = 7168 samples, up to 149 ms, set in its control panel) and it varied between runs. EchoBridge's own share was about 25 ms. Temporarily waiting for late reference adds the necessary delay; current physical-device latency has not been remeasured.
+Most of the remaining delay in those measurements was VB-CABLE's own buffer (`VBAudioCableWDM_Latency` = 7168 samples, up to 149 ms, set in its control panel) and it varied between runs. EchoBridge's own share was about 25 ms. The current 20 ms steady target adds 10 ms over the older 10 ms setting. Temporarily waiting for late reference adds the necessary delay; current physical-device latency has not been remeasured.
 
 Processing costs 0.15–0.2 ms per 10 ms frame, or about 2 ms with AI. Memory is about 22 MB private.
 

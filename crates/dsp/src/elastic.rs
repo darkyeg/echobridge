@@ -9,8 +9,9 @@
 
 use std::collections::VecDeque;
 
-/// Fill the buffer aims for, in seconds: enough to ride out scheduling jitter.
-const TARGET: f64 = 0.01;
+/// Keep a frame in reserve even at the bottom of the clock-correction jitter band.
+const TARGET: f64 = 0.02;
+const FRAME_DURATION: f64 = crate::FRAME as f64 / crate::RATE as f64;
 /// Above this fill (seconds) the buffer is cut back to its reserve; delay must never pile up.
 const MAXIMUM: f64 = 0.15;
 const TRIM_TO: f64 = 0.02;
@@ -51,11 +52,12 @@ impl ElasticBuffer {
         }
     }
 
-    /// Aim for `seconds` of audio, at least the default 10 ms. A higher target is reached at
+    /// Aim for `seconds` of audio, at least the default 20 ms. A higher target is reached at
     /// once with silence, so the extra margin is there for the next late frame.
     pub fn set_target(&mut self, seconds: f64) {
         // Leave one normal frame below the queue limit, including at the largest shift.
-        let target = ((self.rate * seconds.max(TARGET)) as usize).min(self.maximum - (self.rate * TARGET) as usize);
+        let target =
+            ((self.rate * seconds.max(TARGET)) as usize).min(self.maximum - (self.rate * FRAME_DURATION) as usize);
         if target > self.target {
             let padding = (target - self.target)
                 .max(target.saturating_sub(self.data.len()))
@@ -77,7 +79,8 @@ impl ElasticBuffer {
     /// Reserve one upcoming wait without raising the steady clock-drift target. Once
     /// consumed, the silence does not leave a permanent queue of added latency.
     pub fn reserve(&mut self, seconds: f64) -> usize {
-        let reserve = ((self.rate * seconds.max(0.0)) as usize).min(self.maximum - (self.rate * TARGET) as usize);
+        let reserve =
+            ((self.rate * seconds.max(0.0)) as usize).min(self.maximum - (self.rate * FRAME_DURATION) as usize);
         if self.data.len() < reserve {
             let added = reserve - self.data.len();
             self.data.resize(reserve, 0.0);
@@ -176,7 +179,7 @@ mod tests {
             buffer.pull(&mut out);
         }
         assert_eq!(buffer.underflows, 0);
-        assert!((buffer.len() as i64 - 480).abs() < 480);
+        assert_eq!(buffer.len(), 960);
     }
 
     #[test]
@@ -193,7 +196,7 @@ mod tests {
                 output.extend_from_slice(&out);
             }
         }
-        let delay = 480; // the target fill of silence at the start
+        let delay = 960; // the target fill of silence at the start
         assert_eq!(&output[delay..], &signal[..output.len() - delay]);
     }
 
@@ -206,7 +209,46 @@ mod tests {
             buffer.push(&[0.1; 481]);
             buffer.pull(&mut out);
         }
-        assert!(buffer.len() < 1440, "fill {}", buffer.len());
+        assert!(buffer.len() <= buffer.target + buffer.deadband, "fill {}", buffer.len());
+        assert_eq!(buffer.trims, 0);
+    }
+
+    #[test]
+    fn a_slower_producer_does_not_run_dry() {
+        let mut buffer = ElasticBuffer::new(48_000);
+        let mut out = [0.0; 480];
+        // Independent device clocks: the producer runs 0.2 % slow.
+        for _ in 0..20_000 {
+            buffer.push(&[0.1; 479]);
+            buffer.pull(&mut out);
+        }
+        assert_eq!(buffer.underflows, 0, "clock correction must start before the reserve drains");
+        assert_eq!(buffer.trims, 0);
+        assert!(buffer.len() <= 1440, "fill {}", buffer.len());
+        assert!(out.iter().all(|&sample| (sample - 0.1).abs() < 1e-6), "steady voice is preserved");
+    }
+
+    #[test]
+    fn slow_capture_clock_keeps_a_margin_between_device_packets() {
+        let mut buffer = ElasticBuffer::new(48_000);
+        let mut out = [0.0; 256];
+        let mut capture_phase = 0_u64;
+        let mut minimum_fill = usize::MAX;
+        // A 47999 Hz microphone delivers whole 10 ms packets; the 48000 Hz renderer
+        // asks for 256 samples per callback. Simulate thirteen hours without wall-clock waits.
+        for callback in 0..8_775_000 {
+            capture_phase += 256 * 47_999;
+            while capture_phase >= 480 * 48_000 {
+                buffer.push(&[0.1; 480]);
+                capture_phase -= 480 * 48_000;
+            }
+            buffer.pull(&mut out);
+            if callback > 1875 {
+                minimum_fill = minimum_fill.min(buffer.len());
+            }
+        }
+        assert_eq!(buffer.underflows, 0, "packet cadence must not exhaust the drift reserve");
+        assert!(minimum_fill >= 240, "only {minimum_fill} samples of scheduling margin remained");
         assert_eq!(buffer.trims, 0);
     }
 
@@ -217,13 +259,14 @@ mod tests {
         buffer.pull(&mut out);
         assert_eq!(buffer.underflows, 1);
         assert!(out.iter().all(|&s| s == 0.0));
-        assert_eq!(buffer.len(), 480, "refilled to the target");
+        assert_eq!(buffer.len(), 960, "refilled to the target");
     }
 
     #[test]
     fn a_late_frame_after_a_gap_does_not_cause_another() {
         let mut buffer = ElasticBuffer::new(48_000);
         let mut out = [0.0; 480];
+        buffer.pull(&mut out);
         buffer.pull(&mut out);
         buffer.pull(&mut out); // ran dry once
         assert_eq!(buffer.underflows, 1);
@@ -238,11 +281,11 @@ mod tests {
     #[test]
     fn a_higher_target_is_reached_at_once() {
         let mut buffer = ElasticBuffer::new(48_000);
-        buffer.set_target(0.02);
-        assert_eq!(buffer.len(), 960);
-        assert!((buffer.target_seconds() - 0.02).abs() < 1e-9);
+        buffer.set_target(0.03);
+        assert_eq!(buffer.len(), 1440);
+        assert!((buffer.target_seconds() - 0.03).abs() < 1e-9);
         buffer.set_target(0.0);
-        assert!((buffer.target_seconds() - 0.01).abs() < 1e-9, "never below the default");
+        assert!((buffer.target_seconds() - 0.02).abs() < 1e-9, "never below the default");
     }
 
     #[test]
@@ -263,7 +306,7 @@ mod tests {
         let mut buffer = ElasticBuffer::new(48_000);
         buffer.set_target(0.133);
         buffer.set_target(0.01);
-        assert!(buffer.len() <= 960);
+        assert!(buffer.len() <= buffer.target + buffer.deadband);
         assert_eq!(buffer.trims, 1);
         buffer.set_target(f64::INFINITY);
         assert!((buffer.target_seconds() - 0.14).abs() < 1e-9);
@@ -304,8 +347,10 @@ mod tests {
         buffer.push(&[0.5; 480]);
         let added = buffer.reserve(0.103);
         buffer.release_reserve(added);
-        assert!(buffer.len() <= 960, "an early arrival must not leave a large backlog");
+        assert_eq!(buffer.len(), 1440, "an early arrival leaves only the target and queued voice");
         let mut out = [0.0; 480];
+        buffer.pull(&mut out);
+        assert_eq!(out, [0.0; 480]);
         buffer.pull(&mut out);
         assert_eq!(out, [0.0; 480]);
         buffer.push(&[0.75; 480]);
