@@ -94,12 +94,19 @@ impl Pipeline {
         }
     }
 
-    /// Forget learned echo paths, as after a gap in the audio. The AI model keeps its
-    /// state: it holds only the last 30 ms.
+    /// Retrain after a realignment or resume. The AI model stays loaded.
     pub fn reset(&mut self) {
         self.aec3.reset();
         if let Some(linear) = &mut self.linear {
             linear.reset();
+        }
+    }
+
+    /// Clear interrupted stream history while retaining the accepted Clean voice filter.
+    pub(crate) fn restart_stream(&mut self) {
+        self.aec3.reset();
+        if let Some(linear) = &mut self.linear {
+            linear.clear_history();
         }
     }
 
@@ -116,12 +123,26 @@ impl Pipeline {
         far: &[Stereo; FRAME],
         out: &mut [f32; FRAME],
     ) -> Result<(), PipelineError> {
+        self.process_with_reference(near, far, out, true)
+    }
+
+    pub(crate) fn process_with_reference(
+        &mut self,
+        near: &[f32; FRAME],
+        far: &[Stereo; FRAME],
+        out: &mut [f32; FRAME],
+        complete: bool,
+    ) -> Result<(), PipelineError> {
         for (pair, sample) in self.far.as_chunks_mut::<2>().0.iter_mut().zip(far) {
             pair.copy_from_slice(sample);
         }
         let source = match &mut self.linear {
             Some(linear) => {
-                linear.process(near, &self.far, &mut self.mono)?;
+                if complete {
+                    linear.process(near, &self.far, &mut self.mono)?;
+                } else {
+                    linear.process_unadapted(near, &self.far, &mut self.mono)?;
+                }
                 &self.mono
             }
             None => near,

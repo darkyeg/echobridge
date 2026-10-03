@@ -187,15 +187,40 @@ impl LinearCanceller {
         self.explained
     }
 
-    /// Forget everything learned, as after a gap in the audio.
+    /// Forget an obsolete echo path, as after the reference alignment changed.
     pub fn reset(&mut self) {
         *self = Self::new(self.config);
+    }
+
+    /// Restart after a brief stream gap without discarding the accepted echo path.
+    pub fn clear_history(&mut self) {
+        self.spectra.fill(Complex64::default());
+        self.previous.fill(0.0);
+        self.background.copy_from_slice(&self.foreground);
+        self.power.fill(0.0);
+        self.echo_power.fill(0.0);
+        self.residual_power.fill(0.0);
+        self.energy.fill(0.0);
+        self.fit.fill(0.0);
+        self.explained = false;
+        self.quiet_blocks = 0;
+        self.try_level = true;
+        self.trial = None;
     }
 
     /// Cancel the leak in mono `near` using interleaved `far` with `channels` channels.
     ///
     /// `near.len()` must be whole blocks, and `far` must hold the same number of frames.
     pub fn process(&mut self, near: &[f32], far: &[f32], out: &mut [f32]) -> Result<(), DspError> {
+        self.process_inner(near, far, out, true)
+    }
+
+    /// Apply the accepted filter without learning from incomplete playback reference.
+    pub fn process_unadapted(&mut self, near: &[f32], far: &[f32], out: &mut [f32]) -> Result<(), DspError> {
+        self.process_inner(near, far, out, false)
+    }
+
+    fn process_inner(&mut self, near: &[f32], far: &[f32], out: &mut [f32], adapt: bool) -> Result<(), DspError> {
         let LinearConfig { block, channels, .. } = self.config;
         if !near.len().is_multiple_of(block) || far.len() != near.len() * channels || out.len() != near.len() {
             return Err(DspError::BlockMismatch { block });
@@ -206,7 +231,7 @@ impl LinearCanceller {
             for (n, &s) in self.scratch.near.iter_mut().zip(near) {
                 *n = f64::from(s);
             }
-            self.process_block(far);
+            self.process_block(far, adapt);
             for (o, &s) in out.iter_mut().zip(&self.scratch.output) {
                 *o = s as f32;
             }
@@ -214,7 +239,7 @@ impl LinearCanceller {
         Ok(())
     }
 
-    fn process_block(&mut self, far: &[f32]) {
+    fn process_block(&mut self, far: &[f32], adapt: bool) {
         let LinearConfig { block: b, channels: c, .. } = self.config;
         let bins = self.bins;
         // Shift the reference history by one partition and transform the new block,
@@ -241,6 +266,9 @@ impl LinearCanceller {
             &mut s.echo_spectrum,
             &mut s.output,
         );
+        if !adapt {
+            return;
+        }
         residual(
             &mut self.fft,
             &self.spectra,
@@ -274,10 +302,8 @@ impl LinearCanceller {
         self.converged |= explained;
         self.quiet_blocks = if explained || background_explains { self.quiet_blocks + 1 } else { 0 };
 
-        if self.trial.is_some() {
-            self.run_trial();
-        }
-        if self.trial.is_none() && self.quiet_blocks >= SETTLED_START {
+        let adopted = self.trial.is_some() && self.run_trial();
+        if !adopted && self.trial.is_none() && self.quiet_blocks >= SETTLED_START {
             let better = background < IMPROVEMENT * foreground && background < microphone;
             if !self.converged || explained {
                 if better {
@@ -353,15 +379,15 @@ impl LinearCanceller {
         self.trial = Some(Trial { filter, candidate_energy: 0.0, foreground_energy: 0.0, blocks: 0, age: 0, length });
     }
 
-    fn run_trial(&mut self) {
-        let Some(trial) = self.trial.as_mut() else { return };
+    fn run_trial(&mut self) -> bool {
+        let Some(trial) = self.trial.as_mut() else { return false };
         trial.age += 1;
         if trial.age > 3 * trial.length {
             self.trial = None;
-            return;
+            return false;
         }
         if self.quiet_blocks < SETTLED_COUNT {
-            return; // a voice pauses a trial but cannot pass it
+            return false; // a voice pauses a trial but cannot pass it
         }
         let s = &mut self.scratch;
         residual(
@@ -378,15 +404,24 @@ impl LinearCanceller {
         trial.foreground_energy += dot(&s.output, &s.output);
         trial.blocks += 1;
         if trial.blocks < trial.length {
-            return;
+            return false;
         }
         let trial = self.trial.take().expect("checked above");
         if trial.candidate_energy < IMPROVEMENT * trial.foreground_energy {
             self.foreground = trial.filter;
+            // These averages describe the replaced filter. Rebase them to the accepted
+            // candidate so an old path cannot force another five-second shape trial.
+            self.energy[1] = dot(&s.trial, &s.trial);
+            self.fit[0] = self.energy[1];
+            self.fit[1] = difference_energy(&s.near, &s.trial);
+            self.explained = self.fit[0] < EXPLAINED * self.fit[1];
+            self.converged |= self.explained;
             self.adoptions += 1;
             self.try_level = true;
+            true
         } else {
             self.try_level = trial.length != GAIN_TRIAL;
+            false
         }
     }
 }

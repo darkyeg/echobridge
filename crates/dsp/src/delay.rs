@@ -200,6 +200,11 @@ impl Alignment {
         self.shift
     }
 
+    /// Discard measurements from a gap or pause while keeping the known correction.
+    pub fn clear_history(&mut self) {
+        self.estimator.clear();
+    }
+
     /// Measure with one frame of microphone audio and the reference read for it. Returns
     /// `true` when the shift changed, so learned echo paths no longer apply.
     pub fn update(&mut self, near: &[f32], far: &[Stereo]) -> bool {

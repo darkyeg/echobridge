@@ -1,4 +1,4 @@
-//! The live engine on scripted devices, five times faster than real time.
+//! The live engine on scripted devices at the real device cadence.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -7,7 +7,7 @@ use echobridge_audio::fake::{CABLE, FakeBackend, HEADPHONES, MICROPHONE, Script}
 use echobridge_engine::{EchoMode, Engine, EngineConfig, EngineError, NoiseRemoval, Options};
 
 const RATE: usize = 48_000;
-const TICK: Duration = Duration::from_millis(2);
+const TICK: Duration = Duration::from_millis(10);
 
 /// Stereo noise playback and its wired leak: a 0.94 ms delay, mixed from both channels.
 fn script(seconds: usize, voice: bool) -> Script {
@@ -56,6 +56,72 @@ fn energy(x: &[f32]) -> f64 {
 }
 
 #[test]
+fn a_reference_shift_near_the_limit_keeps_coverage_and_removal() {
+    let mut script = script(10, false);
+    // Run this timing regression at real cadence: accelerated capture would hide a
+    // 100 ms reference delay inside the old 20 ms wall-clock wait budget.
+    script.tick = Duration::from_millis(10);
+    let advance = RATE * 97 / 1000;
+    script.microphone = (0..script.microphone.len())
+        .map(|t| {
+            let offset = 2 * (t + advance);
+            script.playback.get(offset..offset + 2).map_or(0.0, |s| 0.5 * s[0] + 0.3 * s[1])
+        })
+        .collect();
+    let leak = energy(&script.microphone[7 * RATE..9 * RATE]);
+    let voice_amplitude = 0.02;
+    for (t, sample) in script.microphone.iter_mut().enumerate().skip(6 * RATE) {
+        *sample += voice_amplitude * (t as f32 * 0.05).sin();
+    }
+    let backend = Arc::new(FakeBackend::new(script));
+    let options = Options { echo: EchoMode::CleanVoice, ..Options::default() };
+    let engine = Engine::start(backend.clone(), config(options, true)).unwrap();
+    wait_for_output(&backend, 7);
+    let before = engine.stats();
+    let rendered = wait_for_output(&backend, 9);
+    let stats = engine.stats();
+    assert!(stats.reference_shift_ms > 90.0, "shift {:.1} ms", stats.reference_shift_ms);
+    assert!(stats.reference_coverage > 0.99, "coverage {}", stats.reference_coverage);
+    assert!(
+        stats.incomplete_reference_frames - before.incomplete_reference_frames < 10,
+        "reference remained incomplete: {stats:?}"
+    );
+    assert_eq!(stats.output_underflows, before.output_underflows, "output ran dry after settling");
+    // Reserve events include unused silence reclaimed after an early reference arrival.
+    // The delivered voice below checks audible gaps; buffer size checks surplus delay.
+    assert!(stats.output_buffer_ms < 50.0, "reference waiting left a permanent backlog: {stats:?}");
+    // Fit the independent voice tone in short windows. Its phase can move with output
+    // latency and clock correction; neither a mute nor missing speech can pass this check.
+    let basis: Vec<_> = (0..480).map(|i| (i as f64 * 0.05).sin_cos()).collect();
+    let (mut ss, mut cc, mut sc) = (0.0, 0.0, 0.0);
+    for &(s, c) in &basis {
+        ss += s * s;
+        cc += c * c;
+        sc += s * c;
+    }
+    let mut residual = 0.0;
+    let delivered = &rendered[7 * RATE..9 * RATE];
+    for block in delivered.as_chunks::<480>().0 {
+        let (mut sy, mut cy) = (0.0, 0.0);
+        for (&y, &(s, c)) in block.iter().zip(&basis) {
+            sy += f64::from(y) * s;
+            cy += f64::from(y) * c;
+        }
+        let determinant = ss * cc - sc * sc;
+        let a = (sy * cc - cy * sc) / determinant;
+        let b = (cy * ss - sy * sc) / determinant;
+        let amplitude = a.hypot(b);
+        assert!((0.7..1.3).contains(&(amplitude / f64::from(voice_amplitude))), "voice amplitude {amplitude:.4}");
+        for (&y, &(s, c)) in block.iter().zip(&basis) {
+            residual += (f64::from(y) - a * s - b * c).powi(2);
+        }
+    }
+    let removed = 10.0 * (leak / (residual / delivered.len() as f64).max(1e-20)).log10();
+    assert!(removed > 25.0, "removed {removed:.1} dB");
+    assert_eq!(engine.failure(), None);
+}
+
+#[test]
 fn clean_voice_removes_the_leak_on_live_streams() {
     let script = script(8, false);
     let leak = energy(&script.microphone[5 * RATE..7 * RATE]);
@@ -74,7 +140,12 @@ fn clean_voice_removes_the_leak_on_live_streams() {
 
 #[test]
 fn pass_through_sends_the_microphone_unchanged() {
-    let script = script(4, true);
+    let mut script = script(4, true);
+    // A stable tone measures microphone level even when clock correction interpolates
+    // samples. Broadband noise loses energy during interpolation by design.
+    for (index, sample) in script.microphone.iter_mut().enumerate() {
+        *sample = 0.05 * (index as f32 * 0.05).sin();
+    }
     let microphone = energy(&script.microphone[2 * RATE..3 * RATE]);
     let backend = Arc::new(FakeBackend::new(script));
     let engine = Engine::start(backend.clone(), config(Options::default(), false)).unwrap();
@@ -90,7 +161,7 @@ fn pass_through_sends_the_microphone_unchanged() {
         .collect();
     assert!(delivered.len() > RATE / 2, "most of the output was silent");
     let change = 10.0 * (energy(&delivered) / microphone).log10();
-    assert!(change.abs() < 0.5, "level changed by {change:.2} dB");
+    assert!(change.abs() < 0.1, "level changed by {change:.2} dB");
     assert!(!engine.stats().processing);
 }
 
@@ -146,6 +217,21 @@ fn an_output_failure_stops_the_engine_with_its_reason() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(engine.failure().unwrap(), "The output device was disconnected.");
+}
+
+#[test]
+fn stopping_keeps_the_final_statistics_and_is_idempotent() {
+    let backend = Arc::new(FakeBackend::new(script(4, false)));
+    let mut engine = Engine::start(backend.clone(), config(Options::default(), true)).unwrap();
+    wait_for_output(&backend, 1);
+    let before = engine.stats().frames;
+    engine.stop();
+    let final_stats = engine.stats();
+    assert!(final_stats.frames >= before);
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(engine.stats(), final_stats, "the shutdown summary must be final");
+    engine.stop();
+    assert_eq!(engine.failure(), None);
 }
 
 #[test]

@@ -54,6 +54,13 @@ impl BlockClock {
     pub fn reset(&mut self) {
         self.next = None;
     }
+
+    /// Account for a known number of lost samples without changing the clock's phase.
+    pub fn skip(&mut self, samples: usize) {
+        if let Some(next) = &mut self.next {
+            *next += samples as f64 / self.rate;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -79,11 +86,34 @@ mod tests {
     }
 
     #[test]
+    fn a_known_lost_block_keeps_clock_phase_despite_timestamp_jitter() {
+        let mut clock = BlockClock::live(48_000);
+        clock.place(1.0, 480);
+        clock.skip(480);
+        let resumed = clock.place(1.0207, 480);
+        assert!(!resumed.restarted);
+        assert!((resumed.start - (1.02 + 0.0007 * 0.002)).abs() < 1e-12);
+    }
+
+    #[test]
     fn the_live_clock_follows_drift_slowly() {
         let mut clock = BlockClock::live(48_000);
         clock.place(0.0, 480);
         let placed = clock.place(0.015, 480);
         // 5 ms late, clamped to 10 ms and followed by 0.2 %.
         assert!((placed.start - (0.01 + 0.005 * 0.002)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn thirteen_hours_of_device_drift_do_not_accumulate_clock_error() {
+        let mut clock = BlockClock::live(48_000);
+        // A long-running performance counter and a device clock 50 ppm slower.
+        for frame in 0..13 * 60 * 60 * 100 {
+            let timestamp = 10_000_000.0 + frame as f64 * 0.0100005;
+            let jitter = if frame % 2 == 0 { 0.0001 } else { -0.0001 };
+            let placed = clock.place(timestamp + jitter, 480);
+            assert_eq!(placed.restarted, frame == 0, "frame {frame}");
+            assert!((placed.start - timestamp).abs() < 0.0004, "clock error at frame {frame}");
+        }
     }
 }

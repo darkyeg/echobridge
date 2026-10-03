@@ -83,6 +83,8 @@ pub struct Stats {
     pub reference_coverage: f32,
     /// The microphone reached full scale within the last second.
     pub clipping: bool,
+    /// Microphone frames with samples near full scale, including those between UI polls.
+    pub clipped_frames: u64,
     /// The microphone is captured without system voice effects.
     pub raw_microphone: bool,
     /// The processing thread runs at audio priority.
@@ -92,12 +94,19 @@ pub struct Stats {
     pub dropped_blocks: u64,
     pub output_underflows: u64,
     pub output_trims: u64,
+    pub output_padding_events: u64,
     /// Processed audio waiting for the output device, in ms: part of the delay.
     pub output_buffer_ms: f32,
     /// How much later than each microphone frame its playback reference is read, in ms,
     /// to keep the leak where the canceller can model it. Positive values add delay.
     pub reference_shift_ms: f32,
     pub incomplete_reference_frames: u64,
+    /// Full retrains after resume, new options, or a change in reference/clock mapping.
+    pub canceller_retrains: u64,
+    /// Interrupted stream histories cleared while retaining the accepted Clean voice path.
+    pub stream_resets: u64,
+    /// Playback timeline restarts, excluding the first capture block.
+    pub reference_discontinuities: u64,
     pub processing_ms: f32,
     pub reference_wait_ms: f32,
 }
@@ -201,6 +210,11 @@ impl Engine {
         self.shared.failure.lock().unwrap().clone()
     }
 
+    /// Stop all streams and finish the current frame, keeping the final statistics.
+    pub fn stop(&mut self) {
+        self.join();
+    }
+
     fn join(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
         if let Some(worker) = self.worker.take() {
@@ -221,6 +235,35 @@ struct MicBlock {
     time: f64,
     discontinuity: bool,
     arrived: Instant,
+    skipped: usize,
+}
+
+/// Queue losses have a known duration: keep it and any device discontinuity until the
+/// next block is accepted, without making capture wait for the processor.
+struct MicQueue {
+    sender: SyncSender<MicBlock>,
+    dropped: Arc<AtomicU64>,
+    skipped: usize,
+    discontinuity: bool,
+}
+
+impl MicQueue {
+    fn send(&mut self, mut block: MicBlock) {
+        block.skipped = self.skipped;
+        block.discontinuity |= self.discontinuity;
+        match self.sender.try_send(block) {
+            Ok(()) => {
+                self.skipped = 0;
+                self.discontinuity = false;
+            }
+            Err(TrySendError::Full(block)) => {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                self.skipped += 1;
+                self.discontinuity |= block.discontinuity;
+            }
+            Err(TrySendError::Disconnected(_)) => {}
+        }
+    }
 }
 
 /// Playback on the microphone's clock, shared with the loopback thread.
@@ -241,6 +284,8 @@ struct Worker {
     clock: BlockClock,
     alignment: Alignment,
     was_processing: bool,
+    reference_generation: u64,
+    reference_complete: bool,
     last_clip: Option<u64>,
     far: [Stereo; FRAME],
     clean: [f32; FRAME],
@@ -272,12 +317,23 @@ impl Worker {
                 clock: BlockClock::live(RATE),
                 alignment: Alignment::default(),
                 was_processing: false,
+                reference_generation: 0,
+                reference_complete: false,
                 last_clip: None,
                 far: [[0.0; 2]; FRAME],
                 clean: [0.0; FRAME],
             };
             worker.shared.stats.lock().unwrap().audio_priority = priority.granted();
-            worker.stream(&mut ready)
+            let result = worker.stream(&mut ready);
+            // All streams have joined: include their last callbacks in shutdown health.
+            let output = worker.output.lock().unwrap();
+            let mut stats = worker.shared.stats.lock().unwrap();
+            stats.output_underflows = output.underflows;
+            stats.output_trims = output.trims;
+            stats.output_padding_events = output.padding_events;
+            stats.dropped_blocks = worker.dropped.load(Ordering::Relaxed);
+            stats.reference_discontinuities = worker.reference.timeline.lock().unwrap().generation();
+            result
         });
         if let Err(error) = result {
             log::warn!("audio engine stopped: {error}");
@@ -305,7 +361,13 @@ impl Worker {
                 if block.gain != 1.0 {
                     stereo.iter_mut().flatten().for_each(|s| *s *= block.gain);
                 }
-                reference.timeline.lock().unwrap().append(&stereo, block.time);
+                {
+                    let mut timeline = reference.timeline.lock().unwrap();
+                    if block.discontinuity {
+                        timeline.clear();
+                    }
+                    timeline.append(&stereo, block.time);
+                }
                 reference.arrived.notify_all();
             }),
         )?;
@@ -315,7 +377,7 @@ impl Worker {
         let keep_alive =
             self.backend.render(&self.config.playback, Latency::Normal, Box::new(|out: &mut [f32]| out.fill(0.0)))?;
         let (sender, blocks) = sync_channel(QUEUE_BLOCKS);
-        let dropped = self.dropped.clone();
+        let mut queue = MicQueue { sender, dropped: self.dropped.clone(), skipped: 0, discontinuity: false };
         let mut mono = Vec::with_capacity(FRAME);
         let (microphone, info) = self.backend.capture(
             &self.config.microphone,
@@ -325,11 +387,13 @@ impl Worker {
                 echobridge_dsp::to_mono(block.samples, block.channels, &mut mono);
                 let mut samples = [0.0; FRAME];
                 samples.copy_from_slice(&mono);
-                let block =
-                    MicBlock { samples, time: block.time, discontinuity: block.discontinuity, arrived: Instant::now() };
-                if let Err(TrySendError::Full(_)) = sender.try_send(block) {
-                    dropped.fetch_add(1, Ordering::Relaxed);
-                }
+                queue.send(MicBlock {
+                    samples,
+                    time: block.time,
+                    discontinuity: block.discontinuity,
+                    arrived: Instant::now(),
+                    skipped: 0,
+                });
             }),
         )?;
         self.shared.stats.lock().unwrap().raw_microphone = info.raw;
@@ -356,7 +420,6 @@ impl Worker {
             };
             self.process(&block, frames)?;
             if let Some(output) = &self.config.output {
-                self.output.lock().unwrap().push(&self.clean);
                 // Opened once audio flows, so the device does not start on silence.
                 if render.is_none() {
                     let buffer = self.output.clone();
@@ -377,43 +440,77 @@ impl Worker {
 
     fn process(&mut self, block: &MicBlock, frame: u64) -> Result<(), EngineError> {
         let started = Instant::now();
+        let expected = self.clock.next();
         if block.discontinuity {
             self.clock.reset();
+        } else if block.skipped > 0 {
+            self.clock.skip(block.skipped * FRAME);
         }
         let placed = self.clock.place(block.time, FRAME);
+        let phase_changed = placed.restarted
+            && expected.is_some_and(|next| {
+                let period = FRAME as f64 / f64::from(RATE);
+                let gap = placed.start - next;
+                (gap - (gap / period).round() * period).abs() > 0.5 / f64::from(RATE)
+            });
         let processing = self.shared.processing.load(Ordering::Relaxed);
         // A reference read later than the frame also arrives that much later. Never wait past
         // the audio the output still holds: a late reference lets a little leak through for a
         // moment, while an empty output is a gap the call app hears.
-        let shift = self.alignment.shift();
-        let buffered = self.output.lock().unwrap().len() as f64 / f64::from(RATE);
-        let deadline = (block.arrived + REFERENCE_WAIT + Duration::from_secs_f64(shift.max(0.0)))
-            .min(started + Duration::from_secs_f64((buffered - OUTPUT_MARGIN).max(0.0)));
-        let coverage = self.wait_for_reference(placed.start + shift, processing.then_some(deadline));
-        let reference_wait = started.elapsed();
+        let start = placed.start + self.alignment.shift();
+        let mut reserved = if processing { self.reserve_for_reference(start, block) } else { 0 };
+        let deadline = processing.then(|| self.reference_deadline(block));
+        let (mut coverage, mut generation) = self.wait_for_reference(placed.start + self.alignment.shift(), deadline);
+        let mut reference_wait = started.elapsed();
+        let interrupted = placed.restarted || block.skipped > 0 || generation != self.reference_generation;
+        if interrupted || !self.was_processing || coverage < 0.99 {
+            self.alignment.clear_history();
+        }
+        let (mut retrained, mut stream_reset) = (false, false);
         if processing {
             let realigned = coverage > 0.99 && self.alignment.update(&block.samples, &self.far);
             if realigned {
                 let shift = self.alignment.shift();
-                // Waiting for a later reference makes frames arrive less evenly: keep 10 ms more.
-                self.output.lock().unwrap().set_target(if shift > 0.0 { 0.02 } else { 0.01 });
                 log::info!("leak moved; reading the reference {:.1} ms after the microphone", shift * 1e3);
+                // The alignment measurement used the old read point. Process this frame
+                // with the new reference too, so a retrain never starts on the wrong path.
+                let waited = Instant::now();
+                reserved += self.reserve_for_reference(placed.start + shift, block);
+                (coverage, generation) =
+                    self.wait_for_reference(placed.start + shift, Some(self.reference_deadline(block)));
+                reference_wait += waited.elapsed();
             }
-            if placed.restarted || !self.was_processing || realigned {
+            if !self.was_processing || realigned || phase_changed || generation != self.reference_generation {
                 self.pipeline.reset();
+                retrained = true;
+            } else if interrupted
+                || generation != self.reference_generation
+                || (coverage >= 0.99) != self.reference_complete
+            {
+                self.pipeline.restart_stream();
+                stream_reset = true;
             }
-            self.pipeline.process(&block.samples, &self.far, &mut self.clean)?;
+            self.pipeline.process_with_reference(&block.samples, &self.far, &mut self.clean, coverage >= 0.99)?;
         } else {
             self.clean = block.samples;
         }
         self.was_processing = processing;
-        if clipping(&block.samples) {
+        self.reference_generation = generation;
+        self.reference_complete = coverage >= 0.99;
+        let clipped = clipping(&block.samples);
+        if clipped {
             self.last_clip = Some(frame);
         }
         let processing_time = started.elapsed() - reference_wait;
-        let (underflows, trims, waiting) = {
-            let output = self.output.lock().unwrap();
-            (output.underflows, output.trims, output.len())
+        let (underflows, trims, padding_events, waiting) = {
+            let mut output = self.output.lock().unwrap();
+            if self.config.output.is_some() {
+                // Keep the reserve through processing, then replace it with voice under
+                // one lock so the renderer cannot observe an empty queue in between.
+                output.release_reserve(reserved);
+                output.push(&self.clean);
+            }
+            (output.underflows, output.trims, output.padding_events, output.len())
         };
         let mut stats = self.shared.stats.lock().unwrap();
         let meter = |previous: f32, level: f32| level.max(previous - METER_RELEASE_DB).max(FLOOR_DBFS);
@@ -430,24 +527,29 @@ impl Worker {
         });
         stats.reference_coverage = coverage as f32;
         stats.clipping = self.last_clip.is_some_and(|clip| frame - clip < CLIP_HOLD_FRAMES);
+        stats.clipped_frames += u64::from(clipped);
         stats.ai_overloaded = self.pipeline.ai_overloaded();
         stats.dropped_blocks = self.dropped.load(Ordering::Relaxed);
         stats.output_underflows = underflows;
         stats.output_trims = trims;
+        stats.output_padding_events = padding_events;
         stats.output_buffer_ms = waiting as f32 * 1000.0 / RATE as f32;
         stats.reference_shift_ms = (self.alignment.shift() * 1000.0) as f32;
         stats.incomplete_reference_frames += u64::from(coverage < 0.99);
+        stats.canceller_retrains += u64::from(retrained);
+        stats.stream_resets += u64::from(stream_reset);
+        stats.reference_discontinuities = generation;
         stats.processing_ms = processing_time.as_secs_f32() * 1000.0;
         stats.reference_wait_ms = reference_wait.as_secs_f32() * 1000.0;
         Ok(())
     }
 
     /// Fill `far` with the playback from `start`, waiting until `deadline` for it to arrive.
-    fn wait_for_reference(&mut self, start: f64, deadline: Option<Instant>) -> f64 {
+    fn wait_for_reference(&mut self, start: f64, deadline: Option<Instant>) -> (f64, u64) {
         let last = start + (FRAME - 1) as f64 / f64::from(RATE);
         let mut timeline = self.reference.timeline.lock().unwrap();
         if let Some(deadline) = deadline {
-            while !timeline.covers(last) {
+            while !timeline.covers(last) && timeline.generation() == self.reference_generation {
                 let now = Instant::now();
                 if now >= deadline {
                     break;
@@ -455,7 +557,38 @@ impl Worker {
                 timeline = self.reference.arrived.wait_timeout(timeline, deadline - now).unwrap().0;
             }
         }
-        timeline.frame(start, &mut self.far)
+        (timeline.frame(start, &mut self.far), timeline.generation())
+    }
+
+    fn reference_deadline(&self, block: &MicBlock) -> Instant {
+        let deadline = block.arrived + REFERENCE_WAIT + Duration::from_secs_f64(self.alignment.shift().max(0.0));
+        if self.config.output.is_none() {
+            return deadline;
+        }
+        let buffered = self.output.lock().unwrap().len() as f64 / f64::from(RATE);
+        deadline.min(Instant::now() + Duration::from_secs_f64((buffered - OUTPUT_MARGIN).max(0.0)))
+    }
+
+    fn reserve_for_reference(&self, start: f64, block: &MicBlock) -> usize {
+        if self.config.output.is_none() {
+            return 0;
+        }
+        let deadline = block.arrived + REFERENCE_WAIT + Duration::from_secs_f64(self.alignment.shift().max(0.0));
+        let remaining = deadline.saturating_duration_since(Instant::now()).as_secs_f64();
+        if remaining == 0.0 {
+            return 0;
+        }
+        let end = start + FRAME as f64 / f64::from(RATE);
+        let missing = {
+            let timeline = self.reference.timeline.lock().unwrap();
+            if timeline.generation() != self.reference_generation || timeline.covers(end - 1.0 / f64::from(RATE)) {
+                return 0;
+            }
+            timeline.end().map_or(remaining, |latest| (end - latest).max(0.0))
+        };
+        // Prime only the actual future reference deficit plus delivery/processing jitter.
+        // The clock-drift target stays at 20 ms after this one wait consumes the reserve.
+        self.output.lock().unwrap().reserve(missing.min(remaining) + REFERENCE_WAIT.as_secs_f64() + OUTPUT_MARGIN)
     }
 }
 
@@ -464,5 +597,179 @@ fn check(streams: &[Option<&dyn Stream>]) -> Result<(), EngineError> {
     match streams.iter().flatten().find_map(|stream| stream.failure()) {
         Some(failure) => Err(echobridge_audio::Error::System(failure).into()),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{EchoMode, NoiseRemoval};
+    use echobridge_audio::fake::{CABLE, FakeBackend, HEADPHONES, MICROPHONE, Script};
+
+    use super::*;
+
+    fn worker() -> Worker {
+        let options = Options { echo: EchoMode::CleanVoice, ..Options::default() };
+        let config = EngineConfig {
+            microphone: MICROPHONE.into(),
+            playback: HEADPHONES.into(),
+            output: Some(CABLE.into()),
+            options,
+            processing: true,
+        };
+        Worker {
+            backend: Arc::new(FakeBackend::new(Script::default())),
+            config,
+            shared: Arc::new(Shared {
+                stop: AtomicBool::new(false),
+                processing: AtomicBool::new(true),
+                stats: Mutex::new(Stats::default()),
+                meters: Arc::default(),
+                failure: Mutex::new(None),
+            }),
+            commands: channel().1,
+            pipeline: Pipeline::new(options).unwrap(),
+            reference: Arc::new(Reference {
+                timeline: Mutex::new(ReferenceTimeline::new(RATE)),
+                arrived: Condvar::new(),
+            }),
+            output: Arc::new(Mutex::new(ElasticBuffer::new(RATE))),
+            dropped: Arc::default(),
+            clock: BlockClock::live(RATE),
+            alignment: Alignment::default(),
+            was_processing: false,
+            reference_generation: 0,
+            reference_complete: false,
+            last_clip: None,
+            far: [[0.0; 2]; FRAME],
+            clean: [0.0; FRAME],
+        }
+    }
+
+    #[test]
+    fn a_microphone_stream_interruption_does_not_forget_the_learned_leak() {
+        interruption_removal(NoiseRemoval::Off, false);
+    }
+
+    #[test]
+    fn clean_voice_ai_keeps_the_learned_leak_after_a_microphone_queue_gap() {
+        interruption_removal(NoiseRemoval::Ai, true);
+    }
+
+    fn interruption_removal(noise: NoiseRemoval, queue_gap: bool) {
+        let mut worker = worker();
+        let options = Options { echo: EchoMode::CleanVoice, noise, ..Options::default() };
+        worker.pipeline.apply(Stages::prepare(options, Some(&worker.pipeline.options())).unwrap());
+        let mut seed = 11u32;
+        let playback: Vec<Stereo> = (0..600 * FRAME)
+            .map(|_| {
+                std::array::from_fn(|_| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    0.2 * ((seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5)
+                })
+            })
+            .collect();
+        let (mut before, mut after) = (0.0, 0.0);
+        for frame in 0..500 {
+            let start = frame * FRAME;
+            let time = frame as f64 * 0.01;
+            worker.reference.timeline.lock().unwrap().append(&playback[start..start + FRAME], time);
+            if frame == 400 {
+                continue;
+            } // one lost microphone block
+            let samples = std::array::from_fn(|i| {
+                let t = start + i;
+                if t >= 45 { 0.5 * playback[t - 45][0] + 0.3 * playback[t - 45][1] } else { 0.0 }
+            });
+            let block = MicBlock {
+                samples,
+                time,
+                discontinuity: frame == 401 && !queue_gap,
+                arrived: Instant::now(),
+                skipped: usize::from(frame == 401 && queue_gap),
+            };
+            worker.process(&block, frame as u64).unwrap();
+            if (405..425).contains(&frame) {
+                before += samples.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>();
+                after += worker.clean.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>();
+            }
+        }
+        let removed = 10.0 * (before / after.max(1e-20)).log10();
+        assert!(removed > 25.0, "a short interruption let the leak return: {removed:.1} dB");
+        let stats = worker.shared.stats.lock().unwrap();
+        assert_eq!(stats.canceller_retrains, 1);
+        assert_eq!(stats.stream_resets, 1);
+        if noise == NoiseRemoval::Ai {
+            assert!(!stats.ai_overloaded, "the recovery check must keep AI active");
+        }
+    }
+
+    #[test]
+    fn queue_overflow_marks_the_next_accepted_block_and_keeps_device_flags() {
+        let (sender, receiver) = sync_channel(1);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let mut queue = MicQueue { sender, dropped: dropped.clone(), skipped: 0, discontinuity: false };
+        let block = |discontinuity| MicBlock {
+            samples: [0.0; FRAME],
+            time: 0.0,
+            discontinuity,
+            arrived: Instant::now(),
+            skipped: 0,
+        };
+        queue.send(block(false));
+        queue.send(block(true));
+        queue.send(block(false));
+        assert_eq!(dropped.load(Ordering::Relaxed), 2);
+        assert_eq!(receiver.recv().unwrap().skipped, 0);
+        queue.send(block(false));
+        let resumed = receiver.recv().unwrap();
+        assert_eq!(resumed.skipped, 2);
+        assert!(resumed.discontinuity);
+        queue.send(block(false));
+        let next = receiver.recv().unwrap();
+        assert_eq!(next.skipped, 0);
+        assert!(!next.discontinuity);
+    }
+
+    #[test]
+    fn an_accepted_queue_gap_preserves_jitter_smoothed_clock_placement() {
+        let mut worker = worker();
+        let first =
+            MicBlock { samples: [0.0; FRAME], time: 1.0, discontinuity: false, arrived: Instant::now(), skipped: 0 };
+        worker.process(&first, 0).unwrap();
+        let resumed = MicBlock { time: 1.0207, skipped: 1, ..first };
+        worker.process(&resumed, 1).unwrap();
+        assert!((worker.clock.next().unwrap() - 1.0300014).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_changed_microphone_clock_phase_retrains_the_obsolete_path() {
+        let mut worker = worker();
+        let first =
+            MicBlock { samples: [0.0; FRAME], time: 1.0, discontinuity: false, arrived: Instant::now(), skipped: 0 };
+        worker.process(&first, 0).unwrap();
+        let resumed = MicBlock { time: 1.0207, discontinuity: true, ..first };
+        worker.process(&resumed, 1).unwrap();
+        assert_eq!(worker.shared.stats.lock().unwrap().canceller_retrains, 2);
+    }
+
+    #[test]
+    fn a_reference_restart_wakes_a_wait_for_the_previous_timeline() {
+        let mut worker = worker();
+        worker.reference.timeline.lock().unwrap().append(&[[0.1; 2]; FRAME], 0.0);
+        let reference = worker.reference.clone();
+        let reset = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut timeline = reference.timeline.lock().unwrap();
+            timeline.clear();
+            timeline.append(&[[0.2; 2]; FRAME], 1.0);
+            drop(timeline);
+            reference.arrived.notify_all();
+        });
+        let started = Instant::now();
+        let (coverage, generation) = worker.wait_for_reference(5.0, Some(started + Duration::from_secs(1)));
+        reset.join().unwrap();
+        assert_eq!(coverage, 0.0);
+        assert_eq!(generation, 1);
+        assert!(started.elapsed() < Duration::from_millis(500), "waited for obsolete reference");
     }
 }

@@ -16,6 +16,8 @@ mod blocks;
 #[cfg(feature = "fake")]
 pub mod fake;
 mod priority;
+#[cfg(any(windows, test))]
+mod timestamps;
 #[cfg(windows)]
 mod wasapi;
 
