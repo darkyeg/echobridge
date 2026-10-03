@@ -466,3 +466,62 @@ fn check(streams: &[Option<&dyn Stream>]) -> Result<(), EngineError> {
         None => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use echobridge_audio::fake::{CABLE, FakeBackend, HEADPHONES, MICROPHONE, Script};
+    use crate::EchoMode;
+
+    use super::*;
+
+    fn worker() -> Worker {
+        let options = Options { echo: EchoMode::CleanVoice, ..Options::default() };
+        let config = EngineConfig {
+            microphone: MICROPHONE.into(), playback: HEADPHONES.into(), output: Some(CABLE.into()),
+            options, processing: true,
+        };
+        Worker {
+            backend: Arc::new(FakeBackend::new(Script::default())), config,
+            shared: Arc::new(Shared {
+                stop: AtomicBool::new(false), processing: AtomicBool::new(true),
+                stats: Mutex::new(Stats::default()), meters: Arc::default(), failure: Mutex::new(None),
+            }),
+            commands: channel().1, pipeline: Pipeline::new(options).unwrap(),
+            reference: Arc::new(Reference { timeline: Mutex::new(ReferenceTimeline::new(RATE)), arrived: Condvar::new() }),
+            output: Arc::new(Mutex::new(ElasticBuffer::new(RATE))), dropped: Arc::default(),
+            clock: BlockClock::live(RATE), alignment: Alignment::default(), was_processing: false,
+            last_clip: None, far: [[0.0; 2]; FRAME], clean: [0.0; FRAME],
+        }
+    }
+
+    #[test]
+    fn a_reference_stream_interruption_does_not_forget_the_learned_leak() {
+        let mut worker = worker();
+        let mut seed = 11u32;
+        let playback: Vec<Stereo> = (0..600 * FRAME).map(|_| {
+            std::array::from_fn(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                0.2 * ((seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5)
+            })
+        }).collect();
+        let (mut before, mut after) = (0.0, 0.0);
+        for frame in 0..500 {
+            let start = frame * FRAME;
+            let time = frame as f64 * 0.01;
+            worker.reference.timeline.lock().unwrap().append(&playback[start..start + FRAME], time);
+            if frame == 400 { continue; } // one lost microphone block
+            let samples = std::array::from_fn(|i| {
+                let t = start + i;
+                if t >= 45 { 0.5 * playback[t - 45][0] + 0.3 * playback[t - 45][1] } else { 0.0 }
+            });
+            let block = MicBlock { samples, time, discontinuity: frame == 401, arrived: Instant::now() };
+            worker.process(&block, frame as u64).unwrap();
+            if (405..425).contains(&frame) {
+                before += samples.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>();
+                after += worker.clean.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>();
+            }
+        }
+        let removed = 10.0 * (before / after.max(1e-20)).log10();
+        assert!(removed > 25.0, "a short interruption let the leak return: {removed:.1} dB");
+    }
+}

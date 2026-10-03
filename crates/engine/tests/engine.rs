@@ -56,6 +56,35 @@ fn energy(x: &[f32]) -> f64 {
 }
 
 #[test]
+fn a_reference_shift_near_the_limit_keeps_coverage_and_removal() {
+    let mut script = script(10, false);
+    // Run this timing regression at real cadence: accelerated capture would hide a
+    // 100 ms reference delay inside the old 20 ms wall-clock wait budget.
+    script.tick = Duration::from_millis(10);
+    let advance = RATE * 97 / 1000;
+    script.microphone = (0..script.microphone.len())
+        .map(|t| {
+            let offset = 2 * (t + advance);
+            script.playback.get(offset..offset + 2).map_or(0.0, |s| 0.5 * s[0] + 0.3 * s[1])
+        })
+        .collect();
+    let leak = energy(&script.microphone[7 * RATE..9 * RATE]);
+    let backend = Arc::new(FakeBackend::new(script));
+    let options = Options { echo: EchoMode::CleanVoice, ..Options::default() };
+    let engine = Engine::start(backend.clone(), config(options, true)).unwrap();
+    wait_for_output(&backend, 7);
+    let before = engine.stats().incomplete_reference_frames;
+    let rendered = wait_for_output(&backend, 9);
+    let stats = engine.stats();
+    assert!(stats.reference_shift_ms > 90.0, "shift {:.1} ms", stats.reference_shift_ms);
+    assert!(stats.reference_coverage > 0.99, "coverage {}", stats.reference_coverage);
+    assert!(stats.incomplete_reference_frames - before < 10, "reference remained incomplete: {stats:?}");
+    let removed = 10.0 * (leak / energy(&rendered[7 * RATE..9 * RATE])).log10();
+    assert!(removed > 25.0, "removed {removed:.1} dB");
+    assert_eq!(engine.failure(), None);
+}
+
+#[test]
 fn clean_voice_removes_the_leak_on_live_streams() {
     let script = script(8, false);
     let leak = energy(&script.microphone[5 * RATE..7 * RATE]);
