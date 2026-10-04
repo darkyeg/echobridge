@@ -45,7 +45,7 @@ jobs:
           curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           # PowerShell writes the license notices (scripts/notices.ps1).
           curl -fsSL https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/powershell-7.4.6-linux-x64.tar.gz -o /tmp/pwsh.tar.gz
-          mkdir -p /opt/pwsh && tar -xzf /tmp/pwsh.tar.gz -C /opt/pwsh && ln -s /opt/pwsh/pwsh /usr/local/bin/pwsh
+          mkdir -p /opt/pwsh && tar -xzf /tmp/pwsh.tar.gz -C /opt/pwsh && chmod +x /opt/pwsh/pwsh && ln -s /opt/pwsh/pwsh /usr/local/bin/pwsh
           echo "/root/.cargo/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@v7
       - run: rustup show
