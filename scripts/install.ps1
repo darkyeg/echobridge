@@ -13,6 +13,8 @@ param(
     [switch] $Uninstall,
     # A release number such as 1.0.0; the latest release by default.
     [string] $Version = 'latest',
+    # The nightly build, which may be unfinished, instead of the latest stable release.
+    [switch] $Nightly,
     # Install this EchoBridge.exe instead of downloading one (it is not checked).
     [string] $From,
     [string] $Repository = $(if ($env:ECHOBRIDGE_REPO) { $env:ECHOBRIDGE_REPO } else { 'darkyeg/echobridge' })
@@ -45,7 +47,10 @@ try {
     if ($From) {
         $download = (Resolve-Path -LiteralPath $From).Path
     } else {
-        $base = if ($Version -eq 'latest') {
+        $base = if ($Nightly) {
+            "https://github.com/$Repository/releases/download/nightly"
+        } elseif ($Version -eq 'latest') {
+            # GitHub's "latest" never points at a pre-release, so this is the stable channel.
             "https://github.com/$Repository/releases/latest/download"
         } else {
             "https://github.com/$Repository/releases/download/v$($Version.TrimStart('v'))"

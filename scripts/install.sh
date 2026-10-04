@@ -7,7 +7,8 @@
 #   ./install.sh --uninstall      remove it again
 #
 # Options: --prefix DIR   install under DIR instead of ~/.local
-#          --version X    install release X (default: the latest)
+#          --version X    install release X (default: the latest stable release)
+#          --nightly      install the nightly build, which may be unfinished
 set -eu
 
 REPO=${ECHOBRIDGE_REPO:-darkyeg/echobridge}
@@ -20,7 +21,8 @@ while [ $# -gt 0 ]; do
         --uninstall) action=uninstall ;;
         --prefix) prefix=${2:?--prefix needs a folder}; shift ;;
         --version) version=${2:?--version needs a number}; shift ;;
-        -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --nightly) version=nightly ;;
+        -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -71,7 +73,10 @@ else
         fail "curl or wget is needed to download EchoBridge."
     fi
     if [ "$version" = latest ]; then
+        # GitHub's "latest" never points at a pre-release, so this is the stable channel.
         base=https://github.com/$REPO/releases/latest/download
+    elif [ "$version" = nightly ]; then
+        base=https://github.com/$REPO/releases/download/nightly
     else
         base=https://github.com/$REPO/releases/download/v${version#v}
     fi
