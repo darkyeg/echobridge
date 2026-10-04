@@ -29,15 +29,27 @@ jobs:
 
   linux:
     runs-on: ubuntu-24.04
+    # Debian 12 has an older glibc than current distributions, and a program built against an
+    # old glibc runs on the newer ones too. Building on the newest image would not.
+    container: debian:12
+    env:
+      # GitHub points HOME at /github/home inside containers, which rustup refuses.
+      HOME: /root
+      CARGO_HOME: /root/.cargo
+      RUSTUP_HOME: /root/.rustup
     steps:
-      - uses: actions/checkout@v7
-      - run: rustup update stable
-      - uses: Swatinem/rust-cache@v2
       - name: Build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libpipewire-0.3-dev libclang-dev pkg-config libfontconfig1-dev libxkbcommon-dev
+          apt-get update
+          apt-get install -y --no-install-recommends             build-essential pkg-config cmake git curl ca-certificates xz-utils dpkg-dev libicu72 libpipewire-0.3-dev libclang-dev libfontconfig1-dev libxkbcommon-dev
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          # PowerShell writes the license notices (scripts/notices.ps1).
+          curl -fsSL https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/powershell-7.4.6-linux-x64.tar.gz -o /tmp/pwsh.tar.gz
+          mkdir -p /opt/pwsh && tar -xzf /tmp/pwsh.tar.gz -C /opt/pwsh && chmod +x /opt/pwsh/pwsh && ln -s /opt/pwsh/pwsh /usr/local/bin/pwsh
+          echo "/root/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@v7
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
       - run: scripts/build-linux.sh
         env:
           ECHOBRIDGE_VERSION: ${{ inputs.version }}

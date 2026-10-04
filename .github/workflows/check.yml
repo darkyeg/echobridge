@@ -42,22 +42,51 @@ jobs:
       - run: cargo test --workspace --locked -- --test-threads=1
       # The installer scripts must stay valid POSIX shell.
       - run: sh -n scripts/install.sh && bash -n scripts/build-linux.sh
-      - run: scripts/build-linux.sh
-      # The packages install and run: the user installer from the tarball, and the .deb.
-      - name: Smoke test the installer
+
+  # The release packages, built exactly as a release builds them (on Debian 12).
+  package:
+    uses: ./.github/workflows/build.yml
+
+  # Does the installer work on each distribution? Each one starts without EchoBridge's
+  # libraries, so this also proves install.sh adds what is missing.
+  install:
+    needs: package
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Debian 12, image: "debian:12", prepare: "apt-get update && apt-get install -y tar gzip", deb: true }
+          - { name: Debian 13, image: "debian:trixie", prepare: "apt-get update && apt-get install -y tar gzip", deb: true }
+          - { name: Ubuntu 24.04, image: "ubuntu:24.04", prepare: "apt-get update && apt-get install -y tar gzip", deb: true }
+          - { name: Fedora, image: "fedora:latest", prepare: "dnf install -y tar gzip" }
+          - { name: Arch, image: "archlinux:latest", prepare: "pacman -Sy --noconfirm tar gzip" }
+          - { name: openSUSE Tumbleweed, image: "opensuse/tumbleweed", prepare: "zypper --non-interactive install tar gzip" }
+    name: install (${{ matrix.name }})
+    container: ${{ matrix.image }}
+    steps:
+      - run: ${{ matrix.prepare }}
+      - uses: actions/download-artifact@v7
+        with:
+          name: linux
+          path: dist
+      - name: Install with install.sh
         run: |
-          tar -xzf dist/linux/EchoBridge-*-linux-x86_64.tar.gz -C /tmp
-          /tmp/EchoBridge-*-linux-x86_64/install.sh
+          tar -xzf dist/EchoBridge-*-linux-x86_64.tar.gz -C /tmp
+          /tmp/EchoBridge-*-linux-x86_64/install.sh --yes
           test -x "$HOME/.local/bin/EchoBridge"
-          "$HOME/.local/bin/EchoBridge" --list-devices || true
+          if ldd "$HOME/.local/bin/EchoBridge" | grep "not found"; then exit 1; fi
+          # There is no sound server here, so it must fail cleanly and say so.
+          status=0
+          "$HOME/.local/bin/EchoBridge" --list-devices > out.txt 2>&1 || status=$?
+          cat out.txt
+          test "$status" -lt 126
           /tmp/EchoBridge-*-linux-x86_64/install.sh --uninstall
           test ! -e "$HOME/.local/bin/EchoBridge"
-      - name: Smoke test the .deb
+      - name: Install the .deb
+        if: matrix.deb
         run: |
-          sudo apt-get install -y ./dist/linux/echobridge_*_amd64.deb
+          apt-get install -y ./dist/echobridge_*_amd64.deb
           test -x /usr/bin/EchoBridge
-          sudo apt-get remove -y echobridge
-      - uses: actions/upload-artifact@v7
-        with:
-          name: EchoBridge-Linux
-          path: dist/linux/
+          if ldd /usr/bin/EchoBridge | grep "not found"; then exit 1; fi
+          apt-get remove -y echobridge

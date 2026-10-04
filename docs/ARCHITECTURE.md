@@ -1,14 +1,62 @@
 # Architecture
 
+## The idea in one minute
+
+A headset's speakers leak into its own microphone, so a call app sends the other person's voice back to them. EchoBridge knows exactly what the headphones played, so it can find that sound in the microphone and subtract it.
+
 ```text
-Physical microphone (RAW) ─┐
+Physical microphone (raw) ─┐
                            ├─ timestamp alignment ─ echo removal ─ noise removal (optional) ─ clean microphone
 Headphone loopback ────────┘                                                                  │
                                                                          ├─ meters
-                                                                         └─ virtual cable ─ call app
+                                                                         └─ virtual microphone ─ call app
 ```
 
-EchoBridge is one `EchoBridge.exe`, built from the Cargo workspace at the repository root (Rust 2024 edition, Slint UI). Each crate depends only on the crates above it in this list:
+Three things make it work, and most of the code serves one of them:
+
+1. **Both signals on one clock.** The microphone and the loopback are stamped by the audio system, so the engine can line them up to a fraction of a sample (see Threads and timing).
+2. **Subtraction that never hurts the voice.** The canceller only learns from moments when it is safe, and falls back to passing audio through.
+3. **A steady output.** The clean microphone leaves through a small self-correcting buffer, so a slightly different output clock neither piles up delay nor runs dry.
+
+## Where do I change...?
+
+| I want to... | Look in |
+|---|---|
+| change how echo is removed | `crates/dsp/src/linear.rs` (Clean voice), `crates/aec3` (Adaptive, Strong) |
+| change noise removal | `crates/denoise` |
+| change how the two streams are aligned | `crates/dsp/src/clock.rs`, `timeline.rs`, `leak.rs` |
+| change the live pipeline, threads or statistics | `crates/engine/src/engine.rs`, `pipeline.rs` |
+| support a new operating system's audio | add an `AudioBackend` in `crates/audio/src/` (copy the shape of `pipewire.rs` or `wasapi.rs`) |
+| change a page or the tray | `crates/app/ui/*.slint`, wired up in `crates/app/src/app.rs` |
+| change start at sign-in, single instance, opening links | `crates/app/src/platform/` (one file per OS) |
+| change what the status line says | `crates/app/src/status.rs` (pure and unit-tested) |
+| change packaging or releases | `scripts/`, `.github/workflows/`, `docs/RELEASING.md` |
+
+## What differs between operating systems
+
+Everything above the `AudioBackend` trait and the `platform/` module is shared. Only these differ:
+
+| | Windows | Linux |
+|---|---|---|
+| Audio backend | WASAPI (`wasapi.rs`) | PipeWire (`pipewire.rs`) |
+| Microphone | opened RAW, so voice effects cannot gate it | opened straight from its node, so no desktop effect sits in front |
+| Playback reference | loopback of the output device | monitor of the output sink |
+| Block timestamps | the performance-counter time WASAPI reports (`timestamps.rs`) | the graph's sample position on the monotonic clock (`graph_clock.rs`) |
+| Virtual microphone | VB-CABLE, installed separately | created by EchoBridge: an `Audio/Source` node named "EchoBridge Microphone" |
+| Audio thread priority | MMCSS "Pro Audio" | round-robin real-time scheduling when the system allows it |
+| Start at sign-in | Run registry key | XDG autostart entry |
+| Single instance | named mutex and event | Unix socket in the runtime directory |
+| Packaging | `EchoBridge.exe`, Inno Setup installer, `install.ps1` | tarball, `.deb`, `install.sh` |
+
+Other systems build with a backend that reports "not supported yet" (`platform/other.rs`).
+
+## The crates
+
+EchoBridge is one program, built from the Cargo workspace at the repository root (Rust 2024 edition, Slint UI). Each crate depends only on the crates above it in this list:
+
+```text
+dsp ← aec3, denoise ← audio ← engine ← app
+```
 
 - `crates/dsp`: pure math, with no devices and no threads.
   - Block placement (`BlockClock`) and the reference timeline.
@@ -35,11 +83,15 @@ EchoBridge is one `EchoBridge.exe`, built from the Cargo workspace at the reposi
 
 ## Threads and timing
 
-- **Capture.**
+- **Capture** (Windows; on Linux see the next item).
   - The microphone opens in RAW mode when the device supports it, so Windows voice effects cannot gate it before echo removal. The stream category stays "Other", so Windows does not duck music.
   - Every block is stamped with the performance-counter time that WASAPI reports for its first frame, so the microphone and the loopback share one clock.
   - Capture checks stamps against the current performance counter and the device's buffer duration. Implausible stamps (including a measured loopback stamp 3.49 seconds in the future) receive a stable offset; healthy stamps retain their precision. `TIMESTAMP_ERROR` packets continue the sample clock when possible and reanchor after gaps. A changed mapping marks a discontinuity so the engine retrains. Recovery warnings include the correction and cumulative counts, at most once per 30 seconds per stream. See Microsoft's [GetBuffer](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getbuffer) and [timestamp flags](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/ne-audioclient-_audclnt_bufferflags) contracts.
   - Loopback blocks are scaled by the endpoint volume, which Windows applies after the loopback tap.
+- **Capture on Linux.** Each stream runs its own PipeWire loop on its own thread. The microphone is captured from its node and the reference from the sink's monitor, both as 48 kHz float.
+  - A stream's `pw_time` pairs the wake-up time of the graph cycle with the cycle's exact sample position. Wake-ups jitter by up to a few milliseconds and only ever late; sample positions do not jitter. `GraphClock` therefore stamps blocks with the sample position plus an offset that follows the earliest wake-ups, so blocks keep sample-exact spacing and two streams in one graph share one axis. A jump in sample position marks a discontinuity, and a large change in the offset reanchors the clock.
+  - The loopback `gain` is 1.0: whether the monitor already includes hardware volume has not been measured on real hardware.
+  - EchoBridge's virtual microphone only receives audio calls while an app records from it; the `ElasticBuffer` is bounded, so an idle microphone does not pile up delay.
 - **Processing.**
   - The processing thread runs at MMCSS "Pro Audio" priority.
   - It places each 10 ms microphone block on the device clock and waits up to 20 ms plus any positive alignment shift (from the block's arrival) for matching playback. The output reserves enough audio for that wait, with a bounded queue. Missing reference becomes silence and counts against reference coverage; Clean voice does not learn a new filter from incomplete reference.
@@ -52,7 +104,7 @@ EchoBridge is one `EchoBridge.exe`, built from the Cargo workspace at the reposi
 - **Output.**
   - The clean microphone renders in shared low-latency mode (`IAudioClient3`, the device's smallest period) when the device runs 32-bit float at 48 kHz. Otherwise it uses a normal 20 ms buffer.
   - The `ElasticBuffer` targets 20 ms. Its ±10 ms jitter band then leaves a 10 ms reserve at the lower edge, so a slower microphone clock is corrected before whole device packets run dry. A 10 ms target with the same band exhausted this reserve before correction began. Before a reference wait, it temporarily reserves the actual missing reference duration plus scheduling margin, capped one frame below the 150 ms queue limit. The reserve remains through processing; unused tail silence is reclaimed and replaced with the processed voice under one lock, keeping consecutive voice frames intact. The steady target stays unchanged. Underflow restores the steady margin, and a smaller target removes surplus delay immediately. Within ±10 ms of the target it passes audio through bit-exact. It resamples only for real clock drift, because interpolation dulls high frequencies, and it trims an excessive backlog.
-- **Keep-alive.** The engine plays silence to the headphones in normal mode, because Windows loopback stops delivering while nothing plays.
+- **Keep-alive.** The engine plays silence to the headphones in normal mode, because Windows loopback stops delivering while nothing plays. On Linux it is harmless and keeps the sink awake.
 - **Window.**
   - The window never waits on audio. `Service` runs engine start, stop and option changes on a control thread.
   - The window reads a status snapshot every 100 ms. It reads the meters from `Meters` atomics every 33 ms, and only while it is visible.
@@ -71,7 +123,9 @@ Moving a microphone can change the acoustic leak path even when reference timest
 
 ## Measured delay
 
-These figures are the microphone-to-CABLE-Output delay, measured on 2026-10-02 with `cargo run --release -p echobridge-engine --example latency -- 8 off` (cross-correlated on the audio clock):
+On Linux, with a test PipeWire graph (no real hardware), a click played into the virtual microphone reached a recording app about 7 ms later, callback to callback. The microphone-to-call-app delay on real hardware has not been measured there yet.
+
+On Windows, these figures are the microphone-to-CABLE-Output delay, measured on 2026-10-02 with `cargo run --release -p echobridge-engine --example latency -- 8 off` (cross-correlated on the audio clock):
 
 | Noise removal | Rust version | Python 0.3.3, same session |
 |---|---|---|
