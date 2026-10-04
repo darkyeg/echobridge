@@ -1,14 +1,15 @@
-# Writes the license notices for everything linked into the Rust EchoBridge.exe:
+# Writes the license notices for everything linked into the Rust EchoBridge program
+# (for the Windows build unless -Target names another):
 # every crate reached through normal dependencies, plus the vendored WebRTC sources.
 # Needs PowerShell 7: cargo metadata has keys that differ only in case.
 #Requires -Version 7
-param([Parameter(Mandatory)] [string] $Output)
+param([Parameter(Mandatory)] [string] $Output, [string] $Target = 'x86_64-pc-windows-msvc')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $cargo = Get-Command cargo -ErrorAction SilentlyContinue
 $cargo = if ($cargo) { $cargo.Source } else { Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe' }
 
-$metadata = & $cargo metadata --format-version 1 --locked --filter-platform x86_64-pc-windows-msvc --manifest-path (Join-Path $root 'Cargo.toml') |
+$metadata = & $cargo metadata --format-version 1 --locked --filter-platform $Target --manifest-path (Join-Path $root 'Cargo.toml') |
     ConvertFrom-Json -AsHashtable -Depth 64
 if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed.' }
 $packages = @{}

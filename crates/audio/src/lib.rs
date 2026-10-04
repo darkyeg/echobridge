@@ -2,9 +2,8 @@
 //!
 //! Everything above this crate talks to an [`AudioBackend`]: list devices, capture a
 //! microphone or the playback of an output device (loopback), and render to an output
-//! device. Each operating system implements the trait once (WASAPI on Windows; PipeWire is
-//! the natural Linux backend). A backend for EchoBridge's own virtual microphone would
-//! appear as one more output device.
+//! device. Each operating system implements the trait once (WASAPI on Windows, PipeWire on
+//! Linux). On Linux, EchoBridge's own virtual microphone appears as one more output device.
 //!
 //! All audio is 48 kHz 32-bit float. Capture is delivered in fixed-size blocks stamped
 //! with the device time of their first sample, on a clock that the microphone and the
@@ -15,7 +14,14 @@ use std::sync::Arc;
 mod blocks;
 #[cfg(feature = "fake")]
 pub mod fake;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod graph_clock;
+#[cfg(target_os = "linux")]
+mod pipewire;
 mod priority;
+#[cfg(any(windows, target_os = "linux"))]
+mod stream;
 #[cfg(any(windows, test))]
 mod timestamps;
 #[cfg(windows)]
@@ -138,7 +144,11 @@ pub fn system_backend() -> Result<Arc<dyn AudioBackend>, Error> {
     {
         Ok(Arc::new(wasapi::Wasapi))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Arc::new(pipewire::PipeWire))
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Err(Error::Unsupported)
     }

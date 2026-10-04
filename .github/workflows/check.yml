@@ -1,13 +1,16 @@
-name: Windows checks
+name: Checks
 on: [push, pull_request]
 jobs:
-  check:
+  windows:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v7
       # rust-toolchain.toml selects the toolchain and installs clippy and rustfmt.
       # Hosted images may retain an older stable release than the workspace requires.
       - run: rustup update stable
+      # Keyed on Cargo.lock, the toolchain and the job, so a changed dependency rebuilds only
+      # what it touches. Each job keeps its own cache, since checks and releases build differently.
+      - uses: Swatinem/rust-cache@v2
       - run: rustup show
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -18,3 +21,43 @@ jobs:
         with:
           name: EchoBridge-Windows
           path: dist/
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup update stable
+      # Keyed on Cargo.lock, the toolchain and the job, so a changed dependency rebuilds only
+      # what it touches. Each job keeps its own cache, since checks and releases build differently.
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup show
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libpipewire-0.3-dev libclang-dev pkg-config libfontconfig1-dev libxkbcommon-dev \
+            pipewire wireplumber dbus-user-session
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked -- --test-threads=1
+      # The installer scripts must stay valid POSIX shell.
+      - run: sh -n scripts/install.sh && bash -n scripts/build-linux.sh
+      - run: scripts/build-linux.sh
+      # The packages install and run: the user installer from the tarball, and the .deb.
+      - name: Smoke test the installer
+        run: |
+          tar -xzf dist/linux/EchoBridge-*-linux-x86_64.tar.gz -C /tmp
+          /tmp/EchoBridge-*-linux-x86_64/install.sh
+          test -x "$HOME/.local/bin/EchoBridge"
+          "$HOME/.local/bin/EchoBridge" --list-devices || true
+          /tmp/EchoBridge-*-linux-x86_64/install.sh --uninstall
+          test ! -e "$HOME/.local/bin/EchoBridge"
+      - name: Smoke test the .deb
+        run: |
+          sudo apt-get install -y ./dist/linux/echobridge_*_amd64.deb
+          test -x /usr/bin/EchoBridge
+          sudo apt-get remove -y echobridge
+      - uses: actions/upload-artifact@v7
+        with:
+          name: EchoBridge-Linux
+          path: dist/linux/

@@ -14,6 +14,9 @@ try {
     Copy-Item -LiteralPath (Join-Path $root 'START-HERE.txt') -Destination $dist
     Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $dist
     & (Join-Path $PSScriptRoot 'notices.ps1') -Output (Join-Path $dist 'THIRD-PARTY-NOTICES.txt')
+    # The list install.ps1 checks its download against.
+    $hash = (Get-FileHash -LiteralPath (Join-Path $dist 'EchoBridge.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$hash  EchoBridge.exe" | Set-Content -LiteralPath (Join-Path $dist 'SHA256SUMS-windows.txt') -Encoding ascii
     $size = (Get-Item (Join-Path $dist 'EchoBridge.exe')).Length / 1MB
     Write-Host ('EchoBridge.exe: {0:N1} MB' -f $size)
 } finally {

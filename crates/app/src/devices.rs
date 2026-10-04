@@ -4,8 +4,9 @@ use echobridge_audio::{AudioBackend, Device, DeviceId, Direction, Error};
 
 use crate::settings::SavedDevice;
 
-/// Virtual cables that carry the clean microphone into call apps.
-const CABLE_NAMES: [&str; 2] = ["cable input", "voicemeeter input"];
+/// Virtual cables that carry the clean microphone into call apps. The last is the virtual
+/// microphone EchoBridge creates on Linux.
+const CABLE_NAMES: [&str; 3] = ["cable input", "voicemeeter input", "echobridge microphone"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeviceLists {
@@ -23,7 +24,8 @@ impl DeviceLists {
         let outputs = backend.devices(Direction::Output)?;
         let (outputs, playback): (Vec<_>, Vec<_>) = outputs.into_iter().partition(|d| is_cable(&d.name));
         Ok(Self {
-            microphones: backend.devices(Direction::Input)?,
+            // EchoBridge's own virtual microphone would feed its output back into itself.
+            microphones: backend.devices(Direction::Input)?.into_iter().filter(|d| !is_cable(&d.name)).collect(),
             playback,
             outputs,
             default_microphone: backend.default_device(Direction::Input)?,
@@ -97,6 +99,9 @@ mod tests {
     fn cables_are_recognized_and_paired() {
         assert!(is_cable("CABLE Input (VB-Audio Virtual Cable)"));
         assert!(!is_cable("Headphones (Realtek Audio)"));
+        // The Linux virtual microphone is its own pair: call apps record from the same name.
+        assert!(is_cable("EchoBridge Microphone"));
+        assert_eq!(call_app_microphone("EchoBridge Microphone"), "EchoBridge Microphone");
         assert_eq!(
             call_app_microphone("CABLE Input (VB-Audio Virtual Cable)"),
             "CABLE Output (VB-Audio Virtual Cable)"

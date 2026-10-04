@@ -1,5 +1,4 @@
-//! Fallbacks for systems without native support yet. A Linux build would register an
-//! XDG autostart entry and use a lock file here.
+//! Fallbacks for systems without native support yet.
 
 use std::io;
 use std::path::Path;

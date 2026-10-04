@@ -184,7 +184,8 @@ impl Controller {
         let setup = window.global::<Setup>();
         setup.set_version(env!("CARGO_PKG_VERSION").into());
         setup.set_autostart(platform::autostart_enabled());
-        setup.set_autostart_supported(cfg!(windows));
+        setup.set_autostart_supported(platform::AUTOSTART_SUPPORTED);
+        setup.set_autostart_title(platform::AUTOSTART_TITLE.into());
         setup.set_protect_on_start(settings.protect_on_start);
         setup.set_delay_ms(settings.delay_ms as i32);
         setup.set_max_delay_ms(MAX_DELAY_MS as i32);
@@ -199,7 +200,7 @@ impl Controller {
         });
         setup.on_autostart_changed(self.act_with(|this, on: bool| {
             if let Err(error) = platform::set_autostart(on) {
-                log::warn!("start with Windows not changed: {error}");
+                log::warn!("starting at sign-in not changed: {error}");
             }
             if let Some(window) = this.window.upgrade() {
                 window.global::<Setup>().set_autostart(platform::autostart_enabled());

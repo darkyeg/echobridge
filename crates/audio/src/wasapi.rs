@@ -10,9 +10,6 @@
 //! thread at "Pro Audio" (MMCSS) priority.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::sync_channel;
-use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, PROPERTYKEY, RPC_E_CHANGED_MODE};
@@ -38,6 +35,7 @@ use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::Win32::System::Variant::VT_BOOL;
 use windows::core::{GUID, HSTRING, Interface};
 
+use crate::stream::ThreadStream;
 use crate::timestamps::CaptureClock;
 use crate::{
     AudioBackend, BlockAssembler, CaptureCallback, CaptureInfo, Device, DeviceId, Direction, Error, Latency, RATE,
@@ -99,7 +97,8 @@ impl AudioBackend for Wasapi {
             Source::Microphone => "EchoBridge microphone",
             Source::Loopback => "EchoBridge playback reference",
         };
-        let (stream, info) = WasapiStream::spawn(name, move |stop, opened| {
+        let (stream, info) = ThreadStream::spawn(name, move |stop, opened| {
+            let _com = Com::init();
             let capture = Capture::open(&device, source)?;
             opened(capture.info);
             capture.run(stop, frames, &mut *callback)
@@ -114,88 +113,13 @@ impl AudioBackend for Wasapi {
         mut callback: RenderCallback,
     ) -> Result<Box<dyn Stream>, Error> {
         let device = device.clone();
-        let (stream, ()) = WasapiStream::spawn("EchoBridge output", move |stop, opened| {
+        let (stream, ()) = ThreadStream::spawn("EchoBridge output", move |stop, opened| {
+            let _com = Com::init();
             let render = Render::open(&device, latency)?;
             opened(());
             render.run(stop, &mut *callback)
         })?;
         Ok(Box::new(stream))
-    }
-}
-
-/// A stream thread, stopped and joined on drop.
-struct WasapiStream {
-    stop: Arc<AtomicBool>,
-    failure: Arc<Mutex<Option<String>>>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl WasapiStream {
-    /// Run `body` on a new audio thread. `body` opens the device, reports what it opened
-    /// through its second argument, then runs until the first argument is set.
-    fn spawn<T, F>(name: &str, body: F) -> Result<(Self, T), Error>
-    where
-        T: Send + 'static,
-        F: FnOnce(&AtomicBool, &mut dyn FnMut(T)) -> Result<(), Error> + Send + 'static,
-    {
-        let stop = Arc::new(AtomicBool::new(false));
-        let failure = Arc::new(Mutex::new(None));
-        let (sender, receiver) = sync_channel::<Result<T, Error>>(1);
-        let thread = {
-            let (stop, failure) = (stop.clone(), failure.clone());
-            std::thread::Builder::new()
-                .name(name.into())
-                .spawn(move || {
-                    let _com = Com::init();
-                    let _priority = crate::AudioThreadPriority::raise();
-                    let mut sender = Some(sender);
-                    let mut report = |value: T| {
-                        if let Some(sender) = sender.take() {
-                            sender.send(Ok(value)).ok();
-                        }
-                    };
-                    if let Err(error) = body(&stop, &mut report) {
-                        log::warn!("audio stream {:?} stopped: {error}", std::thread::current().name());
-                        *failure.lock().unwrap() = Some(error.to_string());
-                        // A caller still waiting for the device to open gets the error.
-                        if let Some(sender) = sender.take() {
-                            sender.send(Err(error)).ok();
-                        }
-                    }
-                })
-                .map_err(|e| Error::System(e.to_string()))?
-        };
-        let mut stream = Self { stop, failure, thread: Some(thread) };
-        match receiver.recv() {
-            Ok(Ok(value)) => Ok((stream, value)),
-            Ok(Err(error)) => {
-                stream.join();
-                Err(error)
-            }
-            Err(_) => {
-                stream.join();
-                Err(Error::System("The audio device could not be opened.".into()))
-            }
-        }
-    }
-
-    fn join(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            thread.join().ok();
-        }
-    }
-}
-
-impl Stream for WasapiStream {
-    fn failure(&self) -> Option<String> {
-        self.failure.lock().unwrap().clone()
-    }
-}
-
-impl Drop for WasapiStream {
-    fn drop(&mut self) {
-        self.join();
     }
 }
 

@@ -22,8 +22,8 @@ EchoBridge is one `EchoBridge.exe`, built from the Cargo workspace at the reposi
   - 30 ms delay, 24 dB attenuation limit.
   - Passes audio through, with the same delay, when the CPU cannot keep up.
 - `crates/audio`: the `AudioBackend` trait (devices, capture, render).
-  - Implementations: the WASAPI backend and a scripted `fake` backend for tests.
-  - A Linux PipeWire backend would implement the same trait. An EchoBridge virtual microphone would appear to the engine as one more output device.
+  - Implementations: the WASAPI backend (Windows), the PipeWire backend (Linux) and a scripted `fake` backend for tests.
+  - On Linux, EchoBridge creates its own virtual microphone (an `Audio/Source` node named "EchoBridge Microphone") while it renders to it, so no virtual cable is installed. The engine sees it as one more output device.
 - `crates/engine`: the live engine and the leak recorder.
   - Threads, `Pipeline`, statistics and lock-free `Meters`.
   - It sees only `dyn AudioBackend`.
@@ -88,8 +88,9 @@ Processing costs 0.15–0.2 ms per 10 ms frame, or about 2 ms with AI. Memory is
 - `cargo run -p echobridge --example screenshots -- <folder>` renders each page offscreen for design review.
 - `scripts/build.ps1` builds the release into `dist/`, with license notices from `scripts/notices.ps1`.
 - `scripts/build-installer.ps1` packs it with Inno Setup (`installer/EchoBridge.iss`).
+- `scripts/build-linux.sh` builds the tarball and the `.deb` into `dist/linux/`. `scripts/install.sh` (Linux) and `scripts/install.ps1` (Windows) install a release for the current user, checking it against the release's `SHA256SUMS-*.txt`.
 
 ## Extension seams
 
 - **Network transport.** It should receive clean frames after processing, or supply a render stream with its playout timestamps. Keep packet handling outside the processing thread. Jitter buffers must stay bounded and report discontinuities so the processors can reset after a reconnection.
-- **Own virtual microphone.** An owned virtual driver replaces VB-CABLE as one more output device. Its lifecycle and timing must stay isolated from the UI and DSP.
+- **Own virtual microphone on Windows.** An owned virtual driver replaces VB-CABLE as one more output device, as the PipeWire virtual source already does on Linux. Its lifecycle and timing must stay isolated from the UI and DSP.

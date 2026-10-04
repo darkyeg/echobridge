@@ -1,0 +1,54 @@
+name: Release
+# Stable releases: push a tag such as v1.0.1 (see docs/RELEASING.md).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    outputs:
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: check
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "$tag" != "$crate" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the version $crate in Cargo.toml."
+            exit 1
+          fi
+          # v1.1.0-rc.1 is a pre-release; v1.1.0 is stable.
+          case "$tag" in *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;; *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;; esac
+
+  build:
+    needs: verify
+    uses: ./.github/workflows/build.yml
+
+  publish:
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+      - name: Collect files
+        run: |
+          mkdir out
+          cp artifacts/windows/* artifacts/linux/* out/
+          cp scripts/install.sh scripts/install.ps1 out/
+          (cd out && sha256sum EchoBridge-Setup.exe >> SHA256SUMS-windows.txt)
+          ls -l out
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=""
+          [ "${{ needs.verify.outputs.prerelease }}" = "true" ] && flags="--prerelease"
+          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" \
+            --title "EchoBridge ${GITHUB_REF_NAME#v}" --generate-notes --verify-tag $flags
