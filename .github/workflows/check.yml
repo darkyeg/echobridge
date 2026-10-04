@@ -8,6 +8,9 @@ jobs:
       # rust-toolchain.toml selects the toolchain and installs clippy and rustfmt.
       # Hosted images may retain an older stable release than the workspace requires.
       - run: rustup update stable
+      # Keyed on Cargo.lock, the toolchain and the job, so a changed dependency rebuilds only
+      # what it touches. Each job keeps its own cache, since checks and releases build differently.
+      - uses: Swatinem/rust-cache@v2
       - run: rustup show
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -24,6 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: rustup update stable
+      # Keyed on Cargo.lock, the toolchain and the job, so a changed dependency rebuilds only
+      # what it touches. Each job keeps its own cache, since checks and releases build differently.
+      - uses: Swatinem/rust-cache@v2
       - run: rustup show
       - name: Build dependencies
         run: |
