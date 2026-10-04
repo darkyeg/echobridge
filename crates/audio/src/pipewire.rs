@@ -12,8 +12,8 @@
 use std::cell::{Cell, RefCell};
 use std::io::Cursor;
 use std::rc::Rc;
-use std::sync::{Arc, Once};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use pipewire as pw;
@@ -404,10 +404,13 @@ struct CaptureState {
 impl Capture {
     fn run(self, stop: &Arc<AtomicBool>, opened: impl FnOnce(usize)) -> Result<(), Error> {
         let connection = Connection::open()?;
-        let mut props = base_properties("Capture", match self.source {
-            Source::Microphone => "echobridge_capture_microphone",
-            Source::Loopback => "echobridge_capture_playback",
-        });
+        let mut props = base_properties(
+            "Capture",
+            match self.source {
+                Source::Microphone => "echobridge_capture_microphone",
+                Source::Loopback => "echobridge_capture_playback",
+            },
+        );
         props.insert(*pw::keys::TARGET_OBJECT, self.device.as_str());
         props.insert(*pw::keys::NODE_LATENCY, format!("{}/{RATE}", self.frames));
         if self.source == Source::Loopback {
@@ -448,7 +451,7 @@ impl Capture {
                 state.clock.reset();
                 state.shared.ready.set(true);
             })
-            .process(|stream, state| capture_process(stream, state))
+            .process(capture_process)
             .register()
             .map_err(unavailable)?;
         let pod = format_pod(raw_format(None));
@@ -481,7 +484,11 @@ fn capture_process(stream: &pw::stream::Stream, state: &mut CaptureState) {
     let mut time: pw::sys::pw_time = unsafe { std::mem::zeroed() };
     // SAFETY: `time` is a valid pw_time and the size passed is its size; the stream is live.
     unsafe { pw::sys::pw_stream_get_time_n(stream.as_raw_ptr(), &mut time, size_of::<pw::sys::pw_time>()) };
-    let rate = if time.rate.denom == 0 { f64::from(RATE) } else { f64::from(time.rate.denom) / f64::from(time.rate.num.max(1)) };
+    let rate = if time.rate.denom == 0 {
+        f64::from(RATE)
+    } else {
+        f64::from(time.rate.denom) / f64::from(time.rate.num.max(1))
+    };
     let placed = state.clock.place(
         time.now as f64 * 1e-9,
         time.ticks as f64 / rate,
@@ -495,13 +502,20 @@ fn capture_process(stream: &pw::stream::Stream, state: &mut CaptureState) {
     } else {
         // PipeWire aligns its buffers, so this is a defensive copy that should never run.
         state.scratch.clear();
-        state.scratch.extend(bytes.chunks_exact(4).take(frames * state.channels).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])));
+        state
+            .scratch
+            .extend(bytes.as_chunks::<4>().0.iter().take(frames * state.channels).map(|b| f32::from_le_bytes(*b)));
         &state.scratch[..]
     };
     let callback = &mut state.callback;
-    assembler.push((!empty).then_some(samples), frames, placed.time, placed.discontinuity, 1.0, &mut |block: CaptureBlock<'_>| {
-        callback(block)
-    });
+    assembler.push(
+        (!empty).then_some(samples),
+        frames,
+        placed.time,
+        placed.discontinuity,
+        1.0,
+        &mut |block: CaptureBlock<'_>| callback(block),
+    );
 }
 
 struct Render {
@@ -572,7 +586,7 @@ impl Render {
                 state.channels = state.info.channels() as usize;
                 state.shared.ready.set(true);
             })
-            .process(|stream, state| render_process(stream, state))
+            .process(render_process)
             .register()
             .map_err(unavailable)?;
         let pod = format_pod(raw_format(virtual_source.then_some(2)));
@@ -602,8 +616,8 @@ fn render_process(stream: &pw::stream::Stream, state: &mut RenderState) {
     state.mono.resize(frames, 0.0);
     (state.callback)(&mut state.mono);
     for (frame, &sample) in bytes.chunks_exact_mut(stride).zip(&state.mono) {
-        for channel in frame.chunks_exact_mut(4) {
-            channel.copy_from_slice(&sample.to_le_bytes());
+        for channel in frame.as_chunks_mut::<4>().0 {
+            *channel = sample.to_le_bytes();
         }
     }
     let chunk = data.chunk_mut();

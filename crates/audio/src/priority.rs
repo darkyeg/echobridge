@@ -29,7 +29,8 @@ impl AudioThreadPriority {
         {
             let parameter = libc::sched_param { sched_priority: 20 };
             // SAFETY: `parameter` is a valid structure; pid 0 is the calling thread.
-            let granted = unsafe { libc::sched_setscheduler(0, libc::SCHED_RR | libc::SCHED_RESET_ON_FORK, &parameter) } == 0;
+            let granted =
+                unsafe { libc::sched_setscheduler(0, libc::SCHED_RR | libc::SCHED_RESET_ON_FORK, &parameter) } == 0;
             Self { granted }
         }
         #[cfg(not(any(windows, target_os = "linux")))]

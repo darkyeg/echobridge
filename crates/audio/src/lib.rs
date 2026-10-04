@@ -14,11 +14,11 @@ use std::sync::Arc;
 mod blocks;
 #[cfg(feature = "fake")]
 pub mod fake;
-#[cfg(target_os = "linux")]
-mod pipewire;
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod graph_clock;
+#[cfg(target_os = "linux")]
+mod pipewire;
 mod priority;
 #[cfg(any(windows, target_os = "linux"))]
 mod stream;
