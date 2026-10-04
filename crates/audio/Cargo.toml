@@ -32,5 +32,10 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell_PropertiesSystem",
 ] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = { version = "0.9", features = ["v0_3_49"] }
+serde_json.workspace = true
+libc = "0.2"
+
 [lints]
 workspace = true

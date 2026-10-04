@@ -20,9 +20,11 @@
 - A signed Windows virtual audio driver, packaged separately, that exposes the clean microphone directly without VB-CABLE and with a smaller buffer.
 - Reversible install and uninstall. The driver and the app are tested and versioned independently.
 
-## Later: Linux
+## Linux (in progress)
 
-- A PipeWire `AudioBackend` and a PipeWire virtual source; the engine and UI stay the same.
+- Done: a PipeWire `AudioBackend`, an owned PipeWire virtual microphone, XDG autostart, single instance, tarball, `.deb` and `install.sh`.
+- To measure on real hardware: the timestamp offset between microphone and loopback, and whether the sink monitor includes the hardware volume (the loopback `gain`).
+- Later: AppImage and Flatpak, and a PulseAudio-only fallback for systems without PipeWire.
 
 ## Later: audio relay
 

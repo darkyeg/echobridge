@@ -1,0 +1,33 @@
+EchoBridge for Linux - removes headphone sound that leaks into your microphone
+
+QUICK START
+1. Install: run ./install.sh from this folder (no administrator rights needed), or on Debian
+   and Ubuntu install the .deb with: sudo apt install ./echobridge_*.deb
+2. Open EchoBridge from your applications menu, or run: EchoBridge
+3. Open Setup and choose:
+   - Microphone: your headset microphone.
+   - Headphones: the device whose sound leaks into the microphone.
+   - Send the clean microphone to: EchoBridge Microphone.
+4. In Discord or any call app, choose "EchoBridge Microphone" as the microphone. Keep your
+   headphones as the call app's speaker.
+5. Press Start on the Live page. The status turns green when your microphone is protected.
+
+No virtual cable to install: EchoBridge creates the virtual microphone itself, and it
+appears while EchoBridge is running. Turn on "Start when you sign in" in Setup so that it is
+always there when you open a call app.
+
+REQUIREMENTS
+PipeWire, which current Ubuntu (22.10 and later), Debian 12, Fedora and Arch use by default.
+Apps that speak PulseAudio (Discord, Chrome, Firefox) work through pipewire-pulse. If
+EchoBridge says it cannot reach PipeWire, check:   systemctl --user status pipewire
+
+THE TRAY ICON
+KDE, XFCE, Cinnamon and MATE show it. GNOME needs the "AppIndicator and KStatusNotifierItem
+Support" extension; without it, EchoBridge still runs, and you can reopen its window by
+starting it again.
+
+DIAGNOSTICS
+EchoBridge --list-devices
+EchoBridge --leak-test 10 --report leak.json
+
+Everything is processed locally in memory. Nothing is recorded or uploaded.

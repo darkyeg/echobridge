@@ -2,7 +2,7 @@
 
 EchoBridge removes headphone sound that leaks into your microphone before call apps hear it. It listens to what your headphones play, subtracts that from the microphone, and sends the clean microphone to a virtual cable that Discord or any call app uses as its microphone.
 
-It is one small Windows program (Rust, about 22 MB of memory) with no runtime to install.
+It is one small program (Rust, about 22 MB of memory) for Windows and Linux, with no runtime to install.
 
 ## Features
 
@@ -25,11 +25,22 @@ Download `EchoBridge.exe` from [Releases](https://github.com/darkyeg/echobridge/
 3. In your call app, choose **CABLE Output** as the microphone.
 4. Keep your headphones as the call app's speaker.
 
+**Linux** (PipeWire, the default on current Ubuntu, Debian, Fedora and Arch): no virtual cable is needed, because EchoBridge creates the virtual microphone itself.
+
+```sh
+curl -fsSL https://github.com/darkyeg/echobridge/releases/latest/download/install.sh | sh   # any distribution
+sudo apt install ./echobridge_*_amd64.deb                                                     # or on Debian and Ubuntu
+```
+
+Then choose **EchoBridge Microphone** in Setup and in your call app. See `START-HERE-LINUX.txt`.
+
+Windows also has a PowerShell installer: `irm https://github.com/darkyeg/echobridge/releases/latest/download/install.ps1 | iex`.
+
 To share the program, see `START-HERE.txt`.
 
 ## Develop
 
-You need Windows 10/11 x64, [Rust](https://rustup.rs/) (`rust-toolchain.toml` selects the version) and Visual Studio 2022 C++ build tools. The first build downloads the WebRTC sources, pinned by SHA-256, and compiles the AI model in. That takes a few minutes.
+You need [Rust](https://rustup.rs/) (`rust-toolchain.toml` selects the version) and, on Windows 10/11 x64, Visual Studio 2022 C++ build tools. On Linux you need a C++ compiler, `pkg-config` and the development packages for PipeWire (`libpipewire-0.3-dev`), clang (`libclang-dev`), fontconfig and xkbcommon. The first build downloads the WebRTC sources, pinned by SHA-256, and compiles the AI model in. That takes a few minutes.
 
 ```powershell
 cargo run --release -p echobridge                   # the app
@@ -53,7 +64,9 @@ pwsh scripts\build.ps1                          # dist\EchoBridge.exe, notices, 
 pwsh scripts\build-installer.ps1 -Compiler <ISCC.exe>  # dist\EchoBridge-Setup.exe (Inno Setup)
 ```
 
-CI on Windows checks formatting, clippy, tests and the release build.
+On Linux, `scripts/build-linux.sh` builds `dist/linux/` (tarball, `.deb`, checksums).
+
+CI on Windows and Ubuntu checks formatting, clippy, tests and the release build.
 
 ## Learn more
 

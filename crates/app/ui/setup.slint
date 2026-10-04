@@ -1,4 +1,4 @@
-// Setup: which devices to use, starting with Windows, and advanced timing.
+// Setup: which devices to use, starting at sign-in, and advanced timing.
 
 import { AboutSlint, ComboBox, SpinBox } from "std-widgets.slint";
 import { Theme, Tone } from "theme.slint";
@@ -87,7 +87,7 @@ export component SetupPage inherits VerticalLayout {
             title: "Startup";
         }
         Toggle {
-            title: "Start with Windows";
+            title: Setup.autostart-title;
             description: "EchoBridge starts in the notification area when you sign in.";
             enabled: Setup.autostart-supported;
             checked <=> Setup.autostart;

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=EchoBridge
+GenericName=Echo removal for headsets
+Comment=Removes headphone sound that leaks into your microphone
+Exec=EchoBridge
+Icon=echobridge
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=microphone;echo;headset;discord;noise;
+StartupWMClass=EchoBridge
