@@ -5,15 +5,17 @@
 #   scripts/build-linux.sh            build, then package
 #   scripts/build-linux.sh --no-build package the existing release build as it is
 #
-# Needs a Rust toolchain, libpipewire-0.3-dev, libclang, libfontconfig1-dev and
-# libxkbcommon-dev. The .deb needs dpkg-deb, which is skipped when it is missing.
+# Build it on an old distribution (CI uses Debian 12) so the program runs on newer ones too.
+# Needs a Rust toolchain, libpipewire-0.3-dev, libclang and libfontconfig1-dev. The .deb needs dpkg-deb, which is skipped when it is missing.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 
 if [ "${1:-}" != "--no-build" ]; then
-    cargo build --release --locked -p echobridge
+    # Load fontconfig when the program starts instead of linking it, so the only library a
+    # system must provide is PipeWire.
+    RUST_FONTCONFIG_DLOPEN=on cargo build --release --locked -p echobridge
 fi
 
 # ECHOBRIDGE_VERSION names a nightly build, such as 1.0.0-nightly.20261004.abc1234.
@@ -70,7 +72,7 @@ Section: sound
 Priority: optional
 Architecture: $deb_arch
 Installed-Size: $size
-Depends: libpipewire-0.3-0t64 | libpipewire-0.3-0, libfontconfig1, libxkbcommon0, libc6
+Depends: libpipewire-0.3-0t64 | libpipewire-0.3-0 (>= 0.3.50), libfontconfig1, libc6 (>= 2.36)
 Recommends: pipewire-pulse, wireplumber
 Maintainer: EchoBridge <noreply@users.noreply.github.com>
 Homepage: https://github.com/darkyeg/echobridge

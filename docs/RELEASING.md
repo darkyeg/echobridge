@@ -42,6 +42,7 @@ Run it again to update. Force a build without waiting for the night: Actions →
 
 ## Notes
 
+- Linux packages are built on Debian 12, so they run on it and on every newer distribution. CI installs each package on Debian 12 and 13, Ubuntu 24.04, Fedora, Arch and openSUSE Tumbleweed, starting without EchoBridge's libraries, to prove that `install.sh` works there.
 - Public repositories get unlimited Actions minutes on the hosted runners. A full build takes roughly 10–15 minutes per system; the cache cuts repeat builds.
 - GitHub pauses scheduled workflows after 60 days without repository activity; any push or a manual run restarts them.
 - Windows builds are not code-signed yet, so Windows warns on first run.
