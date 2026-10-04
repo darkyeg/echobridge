@@ -32,6 +32,11 @@ jobs:
     # Debian 12 has an older glibc than current distributions, and a program built against an
     # old glibc runs on the newer ones too. Building on the newest image would not.
     container: debian:12
+    env:
+      # GitHub points HOME at /github/home inside containers, which rustup refuses.
+      HOME: /root
+      CARGO_HOME: /root/.cargo
+      RUSTUP_HOME: /root/.rustup
     steps:
       - name: Build dependencies
         run: |
@@ -41,7 +46,7 @@ jobs:
           # PowerShell writes the license notices (scripts/notices.ps1).
           curl -fsSL https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/powershell-7.4.6-linux-x64.tar.gz -o /tmp/pwsh.tar.gz
           mkdir -p /opt/pwsh && tar -xzf /tmp/pwsh.tar.gz -C /opt/pwsh && ln -s /opt/pwsh/pwsh /usr/local/bin/pwsh
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "/root/.cargo/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@v7
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
