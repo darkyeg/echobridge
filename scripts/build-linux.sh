@@ -13,9 +13,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 
 if [ "${1:-}" != "--no-build" ]; then
-    # Load fontconfig when the program starts instead of linking it, so the only library a
-    # system must provide is PipeWire.
-    RUST_FONTCONFIG_DLOPEN=on cargo build --release --locked -p echobridge
+    cargo build --release --locked -p echobridge
 fi
 
 # ECHOBRIDGE_VERSION names a nightly build, such as 1.0.0-nightly.20261004.abc1234.
