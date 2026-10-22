@@ -10,7 +10,23 @@ EchoBridge removes the sound your headphones leak into your microphone, so Disco
 
 Download [`EchoBridge-Setup.exe`](https://github.com/darkyeg/echobridge/releases/latest), then install [VB-CABLE](https://vb-audio.com/Cable/) once (free).
 
-**Linux**
+**NixOS (x86_64)**
+
+```sh
+nix run github:darkyeg/echobridge
+```
+
+To install it in your profile:
+
+```sh
+nix profile add github:darkyeg/echobridge
+```
+
+The flake downloads a verified release binary and patches its library paths for NixOS;
+it does not compile Rust or C++. PipeWire must be enabled. See [NixOS setup](docs/NIXOS.md)
+for declarative installation and microphone troubleshooting.
+
+**Other Linux distributions**
 
 ```sh
 curl -fsSL https://github.com/darkyeg/echobridge/releases/latest/download/install.sh | sh

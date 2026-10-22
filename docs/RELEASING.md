@@ -42,6 +42,14 @@ Run it again to update. Force a build without waiting for the night: Actions →
 
 ## Notes
 
+- The Nix flake repackages an already published Linux binary; it does not compile the
+  current source checkout. After publishing a stable release, update `version` and the
+  tarball's SRI hash in `packaging/nix/package.nix`. Verify the downloaded tarball against
+  that release's `SHA256SUMS-linux.txt`, then convert its SHA-256 with
+  `nix hash convert --hash-algo sha256 --to sri HEX_DIGEST`. Run `nix flake check` and
+  commit the package update. Keep `flake.lock` committed; update nixpkgs separately with
+  `nix flake update nixpkgs`. Never point the package at the mutable nightly asset.
+
 - Linux packages are built on Debian 12, so they run on it and on every newer distribution. CI installs each package on Debian 12 and 13, Ubuntu 24.04, Fedora, Arch and openSUSE Tumbleweed, starting without EchoBridge's libraries, to prove that `install.sh` works there.
 - Public repositories get unlimited Actions minutes on the hosted runners. A full build takes roughly 10–15 minutes per system; the cache cuts repeat builds.
 - GitHub pauses scheduled workflows after 60 days without repository activity; any push or a manual run restarts them.
