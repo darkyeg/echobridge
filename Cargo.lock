@@ -1216,7 +1216,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "echobridge"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "echobridge-audio",
  "echobridge-dsp",
@@ -1234,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "echobridge-aec3"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "cc",
  "sha2",
@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "echobridge-audio"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "async-io",
  "futures-lite",
@@ -1258,7 +1258,7 @@ dependencies = [
 
 [[package]]
 name = "echobridge-denoise"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "deep_filter",
  "hound",
@@ -1270,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "echobridge-dsp"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "rand",
  "rand_distr",
@@ -1282,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "echobridge-engine"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "echobridge-aec3",
  "echobridge-audio",
