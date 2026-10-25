@@ -269,6 +269,10 @@ impl LinearCanceller {
         if !adapt {
             return;
         }
+        // Playback silence cannot judge the filter; microphone noise must not erase its progress.
+        if self.spectra.iter().all(|value| value.norm_sqr() == 0.0) {
+            return;
+        }
         residual(
             &mut self.fft,
             &self.spectra,

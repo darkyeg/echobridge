@@ -24,7 +24,8 @@ Closing the window keeps EchoBridge running in the notification area. Quit it fr
 CHOOSE HOW THE LEAK IS REMOVED
 Clean voice: never alters your voice. Best for a wired leak, such as a headset on a combined
 audio jack.
-Adaptive: removes the leak and keeps your voice clear while you talk.
+Adaptive: automatically uses strong protection while learning or when echo risk rises.
+Recommended.
 Strong: removes the most, but can muffle your voice while music plays.
 
 Noise removal is Off by default because call apps remove noise too. Standard removes steady

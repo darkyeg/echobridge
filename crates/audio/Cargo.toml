@@ -36,6 +36,9 @@ windows = { version = "0.62", features = [
 pipewire = { version = "0.9", features = ["v0_3_49"] }
 serde_json.workspace = true
 libc = "0.2"
+zbus = "5.19"
+async-io = "2.6"
+futures-lite = "2.6"
 
 [lints]
 workspace = true

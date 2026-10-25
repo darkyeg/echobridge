@@ -1245,12 +1245,15 @@ dependencies = [
 name = "echobridge-audio"
 version = "1.0.1"
 dependencies = [
+ "async-io",
+ "futures-lite",
  "libc",
  "log",
  "pipewire",
  "serde_json",
  "thiserror 2.0.21",
  "windows",
+ "zbus",
 ]
 
 [[package]]

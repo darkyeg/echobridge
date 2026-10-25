@@ -87,8 +87,10 @@ in
   or its hardware Mic Boost. Gain settings depend on the microphone; a percentage that
   works for one device is not a universal default. Software cannot recover clipped audio.
 - Echo removal targets playback leakage. Keyboard noise needs Noise removal; try **AI**
-  if the processor can keep up. Clean voice is intended for a wired leak; Adaptive is
-  the default for other cases.
+  if the processor can keep up. **Adaptive** starts with Strong protection and only
+  relaxes it after sustained measurements; inconclusive measurements keep Strong active.
+  Clean voice preserves the voice without suppression, but can leave a weak wired leak
+  audible when microphone noise prevents its linear filter from learning it.
 - After restarting EchoBridge, check the microphone selection in your call app again.
   A call app can fall back to the physical microphone while the virtual one is absent.
 - If an echo appears briefly and disappears, note the time, the active modes, and whether
