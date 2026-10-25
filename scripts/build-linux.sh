@@ -20,6 +20,8 @@ fi
 version=${ECHOBRIDGE_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)}
 # In Debian ordering a tilde sorts before the release, so a nightly never outranks it.
 deb_version=$(printf '%s' "$version" | sed 's/-/~/')
+# GitHub normalizes tildes in asset names; checksum filenames must match the upload.
+deb_filename_version=$(printf '%s' "$deb_version" | tr '~' '.')
 case "$(uname -m)" in
     x86_64) arch=x86_64 deb_arch=amd64 ;;
     aarch64) arch=aarch64 deb_arch=arm64 ;;
@@ -80,7 +82,7 @@ Description: Removes headphone sound that leaks into your microphone
  virtual microphone "EchoBridge Microphone". It needs PipeWire (the default on
  current Ubuntu, Debian, Fedora and Arch).
 EOF
-    dpkg-deb --root-owner-group --build "$deb" "$dist/echobridge_${deb_version}_$deb_arch.deb" >/dev/null
+    dpkg-deb --root-owner-group --build "$deb" "$dist/echobridge_${deb_filename_version}_$deb_arch.deb" >/dev/null
 else
     echo "dpkg-deb not found: .deb skipped" >&2
 fi

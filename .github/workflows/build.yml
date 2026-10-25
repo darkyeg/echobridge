@@ -14,6 +14,8 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
       - run: rustup update stable
       - uses: Swatinem/rust-cache@v2
       - run: pwsh -NoProfile -File scripts/build.ps1
@@ -48,6 +50,8 @@ jobs:
           mkdir -p /opt/pwsh && tar -xzf /tmp/pwsh.tar.gz -C /opt/pwsh && chmod +x /opt/pwsh/pwsh && ln -s /opt/pwsh/pwsh /usr/local/bin/pwsh
           echo "/root/.cargo/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
       - run: scripts/build-linux.sh
