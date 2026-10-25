@@ -15,6 +15,7 @@ mod meters;
 mod options;
 mod pipeline;
 mod recorder;
+mod release;
 
 pub use engine::{Engine, EngineConfig, EngineError, Stats};
 pub use meters::{Levels, Meters};

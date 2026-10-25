@@ -22,7 +22,7 @@ Three things make it work, and most of the code serves one of them:
 
 | I want to... | Look in |
 |---|---|
-| change how echo is removed | `crates/dsp/src/linear.rs` (Clean voice), `crates/aec3` (Adaptive, Strong) |
+| change how echo is removed | `crates/dsp/src/linear.rs` (Clean voice), `crates/aec3` (Strong), `crates/engine/src/release.rs` (Adaptive protection) |
 | change noise removal | `crates/denoise` |
 | change how the two streams are aligned | `crates/dsp/src/clock.rs`, `timeline.rs`, `leak.rs` |
 | change the live pipeline, threads or statistics | `crates/engine/src/engine.rs`, `pipeline.rs` |
@@ -74,6 +74,12 @@ dsp ← aec3, denoise ← audio ← engine ← app
   - On Linux, EchoBridge creates its own virtual microphone (an `Audio/Source` node named "EchoBridge Microphone") while it renders to it, so no virtual cable is installed. The engine sees it as one more output device.
 - `crates/engine`: the live engine and the leak recorder.
   - Threads, `Pipeline`, statistics and lock-free `Meters`.
+  - Adaptive runs Strong and its gentler AEC3 tuning in parallel on the same audio. It starts
+    with Strong and crossfades to the gentler output only after sustained learning and
+    playback-only evidence indicate little high-frequency echo. Ambiguous evidence keeps
+    Strong active; renewed echo risk, missing reference or a stream restart restores it.
+    These measurements are conservative heuristics, not a guarantee of echo-free audio.
+    Both cores stay warm, and one optional AI denoiser processes the selected output.
   - It sees only `dyn AudioBackend`.
 - `crates/app`: the program itself.
   - The Slint UI (`ui/*.slint`) and tray icon.

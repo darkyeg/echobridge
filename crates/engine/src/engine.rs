@@ -644,6 +644,7 @@ fn check(streams: &[Option<&dyn Stream>]) -> Result<(), EngineError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::pipeline::signals::{lowpass_leak, varying_music};
     use crate::{EchoMode, NoiseRemoval};
     use echobridge_audio::fake::{CABLE, FakeBackend, HEADPHONES, MICROPHONE, Script};
 
@@ -915,5 +916,32 @@ mod tests {
         assert_eq!(coverage, 0.0);
         assert_eq!(generation, 1);
         assert!(started.elapsed() < Duration::from_millis(500), "waited for obsolete reference");
+    }
+
+    #[test]
+    fn a_reference_gap_returns_adaptive_to_strong_without_changing_the_counters() {
+        let mut worker = worker();
+        let options = Options { echo: EchoMode::Adaptive, noise: NoiseRemoval::Off, ..Options::default() };
+        worker.pipeline.apply(Stages::prepare(options, Some(&worker.pipeline.options())).unwrap());
+        let frames = lowpass_leak(&varying_music(10));
+        let mut released = None;
+        for (frame, (near, far)) in frames.iter().enumerate() {
+            let time = frame as f64 * 0.01;
+            let restart = released.is_some_and(|released| frame == released + 1);
+            worker.reference.append(far, time, restart);
+            let block = MicBlock { samples: *near, time, discontinuity: false, arrived: Instant::now(), skipped: 0 };
+            worker.process(&block, frame as u64).unwrap();
+            if restart {
+                assert_eq!(worker.pipeline.release_weight(), Some(0.0), "the restart left the released path audible");
+                break;
+            }
+            if worker.pipeline.release_weight() == Some(1.0) {
+                released = Some(frame);
+            }
+        }
+        assert!(released.is_some(), "the highs were never released");
+        let stats = worker.shared.stats.lock().unwrap();
+        assert_eq!(stats.canceller_retrains, 1);
+        assert_eq!(stats.stream_resets, 1);
     }
 }
