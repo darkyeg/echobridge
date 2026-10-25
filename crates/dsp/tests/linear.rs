@@ -26,6 +26,30 @@ fn removes_a_strong_stereo_leak_after_a_few_seconds() {
 }
 
 #[test]
+fn intermittent_playback_converges_despite_microphone_noise_during_pauses() {
+    for burst in [R / 8, R / 4] {
+        let mut random = rng(11);
+        let count = 20 * R;
+        let period = 4 * burst;
+        let playback = normal(&mut random, 0.1, count);
+        let playback: Vec<f64> =
+            playback.into_iter().enumerate().map(|(i, sample)| if i % period < burst { sample } else { 0.0 }).collect();
+        let noise = normal(&mut random, 0.01, count);
+        let leak: Vec<f64> = (0..count).map(|i| if i >= 45 { 0.5 * playback[i - 45] } else { 0.0 }).collect();
+        let near: Vec<f64> = leak.iter().zip(&noise).map(|(echo, noise)| echo + noise).collect();
+        let reference = interleave(&playback, &playback);
+        let mut canceller = LinearCanceller::new(LinearConfig::default());
+        let mut output = vec![0.0f32; count];
+        canceller.process(&to_f32(&near), &reference, &mut output).unwrap();
+        let leftover: Vec<f64> = output.iter().zip(&noise).map(|(sample, noise)| f64::from(*sample) - noise).collect();
+        let settled = 15 * R..;
+        let removed = db(&leak[settled.clone()]) - db(&leftover[settled]);
+        assert!(removed > 20.0, "{} ms bursts left audible echo: {removed:.1} dB", burst * 1000 / R);
+        assert!(canceller.adoptions() > 0, "intermittent speech must teach an output filter");
+    }
+}
+
+#[test]
 fn incomplete_reference_cannot_train_a_filter_and_complete_reference_can_recover() {
     let signal = jack_leak(12, None);
     let near = to_f32(&signal.leak);
