@@ -338,7 +338,6 @@ impl Worker {
         commands: Receiver<Command>,
         ready: SyncSender<Result<(), EngineError>>,
     ) {
-        let priority = AudioThreadPriority::raise();
         let mut ready = Some(ready);
         let result = Pipeline::new(config.options).map_err(EngineError::from).and_then(|pipeline| {
             let mut worker = Self {
@@ -363,6 +362,7 @@ impl Worker {
                 far: [[0.0; 2]; FRAME],
                 clean: [0.0; FRAME],
             };
+            let priority = AudioThreadPriority::raise();
             worker.shared.stats.lock().unwrap().audio_priority = priority.granted();
             let result = worker.stream(&mut ready);
             // All streams have joined: include their last callbacks in shutdown health.
