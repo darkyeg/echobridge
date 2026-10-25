@@ -67,7 +67,7 @@ dsp ← aec3, denoise ← audio ← engine ← app
   - Compiled from the pywebrtc-audio sources, pinned and hash-checked.
   - No C++ exception crosses the boundary.
 - `crates/denoise`: DeepFilterNet3 (model compiled in).
-  - 30 ms delay, 24 dB attenuation limit.
+  - 30 ms delay, 36 dB attenuation limit.
   - Passes audio through, with the same delay, when the CPU cannot keep up.
 - `crates/audio`: the `AudioBackend` trait (devices, capture, render).
   - Implementations: the WASAPI backend (Windows), the PipeWire backend (Linux) and a scripted `fake` backend for tests.

@@ -37,8 +37,7 @@ pub enum Error {
 /// Model thresholds, in dB of local signal-to-noise ratio.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
-    /// Most the model may attenuate. A limit keeps some room tone, so the voice never sits
-    /// on dead silence.
+    /// Caps attenuation, retaining a small amount of the unprocessed signal.
     pub attenuation_limit_db: f32,
     /// Frames below this are treated as noise only.
     pub min_snr_db: f32,
@@ -51,7 +50,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            attenuation_limit_db: 24.0,
+            attenuation_limit_db: 36.0,
             min_snr_db: -15.0,
             max_erb_snr_db: 35.0,
             max_df_snr_db: 35.0,
