@@ -5,7 +5,7 @@ Two channels, built by the same workflow (`.github/workflows/build.yml`), so a n
 | | Stable | Nightly |
 |---|---|---|
 | Trigger | push a tag `vX.Y.Z` | every day at 03:00 UTC, or run it by hand |
-| Source | the tagged commit | `main`, skipped when it has not changed |
+| Source | the tagged commit | `main` on schedule, skipping unchanged commits; selected ref on manual runs |
 | GitHub release | `vX.Y.Z`, kept forever | `nightly` pre-release, replaced each run |
 | File names | `EchoBridge-1.0.1-linux-x86_64.tar.gz` | `EchoBridge-1.0.1-nightly.20261004.abc1234-linux-x86_64.tar.gz` |
 | `.deb` version | `1.0.1` | `1.0.1~nightly.20261004.abc1234` (sorts below the release) |
@@ -38,7 +38,9 @@ curl -fsSL https://github.com/darkyeg/echobridge/releases/download/nightly/insta
 & ([scriptblock]::Create((irm https://github.com/darkyeg/echobridge/releases/download/nightly/install.ps1))) -Nightly
 ```
 
-Run it again to update. Force a build without waiting for the night: Actions → Nightly → Run workflow → Force.
+Run it again to update. To test a branch before merging, use Actions → Nightly → Run
+workflow, select that branch, and enable Force. Planning, both platform builds and
+publication use the same triggering commit; this does not publish a stable release.
 
 ## Notes
 
